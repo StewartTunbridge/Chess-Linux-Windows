@@ -1,3 +1,4 @@
 Built with Code Blocks on all targets
   Windows requires MinGW
 Requires the Widgets unit
+Requires the Chess-for-Console unit (just for the Chess enging (Chess.c)
