@@ -9,13 +9,15 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-const char Revision [] = "0.96";
+const char Revision [] = "0.99";
 
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
 
 #include "../Widgets/Widgets.hpp"
+#include "../Widgets/WidgetsGrid.hpp"
+#include "../Widgets/FileSelect.hpp"
 
 #include "../ConsoleApps/chess/Chess.c"
 
@@ -60,6 +62,30 @@ char PieceToChar (int Pce)
 int MoveCount;
 int BoardColour;
 bool Refresh;
+bool Exit;
+bool Load;
+bool Save;
+
+bool PlayThreadWhite;
+bool PlayThreadStarted;
+bool PlayThreadFinished;
+int PlayThreadScore;
+int PlayThreadTime;
+
+void *PlayThread (void *PlayWhite)
+  {
+    PlayThreadWhite = (bool) PlayWhite;
+    PlayThreadStarted = true;
+    PlayThreadFinished = false;
+    MovesConsidered = 0;
+    PlayThreadTime = ClockMS ();
+    PlayThreadScore = BestMove (PlayThreadWhite, 0);
+    PlayThreadTime = ClockMS () - PlayThreadTime;
+    PlayThreadFinished = true;
+    PlayThreadStarted = false;
+    return NULL;
+  }
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -67,7 +93,7 @@ bool Refresh;
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-class _BoardC: public _Container
+class _ChessBoard: public _Container
   {
     public:
       int Colours [2];
@@ -75,31 +101,38 @@ class _BoardC: public _Container
       _Coord MoveFrom, MoveTo;   // Human move
       _Coord PCFrom = {-1, -1}, PCTo;   // PC Move
       //
-      _BoardC (_Container *Parent, _Rect Rect);
+      _ChessBoard (_Container *Parent, _Rect Rect);
+      ~_ChessBoard ();
       void DrawCustom (void);
       bool ProcessEventCustom (_Event *Event, _Point Offset);
   };
 
-_BoardC::_BoardC (_Container *Parent, _Rect Rect) : _Container (Parent, Rect)
+_ChessBoard::_ChessBoard (_Container *Parent, _Rect Rect) : _Container (Parent, Rect)
   {
     Colours [0] = ColourAdjust (cBrown, 140);
     Colours [1] = ColourAdjust (cBrown, 180);
     MoveStart = MoveComplete = false;
   }
 
+_ChessBoard::~_ChessBoard ()
+  {
+  }
+
 const int cGreenGray = 0x9cf09c;
 const int cBlueGray = 0xff9c9c;
 
-void _BoardC::DrawCustom ()
+void _ChessBoard::DrawCustom ()
   {
     int dx, dy;
     _Rect Square;
     int x, y, Pass;
     int c;
-    char p_ [2];
+    char p_ [] = "?";
+    _Font *FontTag;
     //
     dx = Rect.Width / 8;
     dy = Rect.Height / 8;
+    FontTag = Parent->FontFind ();   // Use the Forms "normal" font for Tags
     if (FontSet ("CHEQ_TT.TTF", dy * 4 / 5))   // fonts4free.net/chess-font.html
       for (Pass = 0; Pass < 2; Pass++)
         {
@@ -115,9 +148,24 @@ void _BoardC::DrawCustom ()
                   DrawRectangle (Square, cBlack, cBlack, c);
                 else   // Pass == 1
                   {
-                    p_ [0] = PieceToChar (Board [x][y]);
-                    p_ [1] = 0;
+                    Square.x++;
+                    Square.Width--;
+                    if (dy > 40 && FontTag)
+                      {
+                        FontTag->ColourBG = c;
+                        if (x == 0)
+                          {
+                            p_ [0] = y + '1';
+                            TextOutAligned (FontTag, Square, p_, aLeft, aCenter);
+                          }
+                        if (y == 0)
+                          {
+                            p_ [0] = x + 'a';
+                            TextOutAligned (FontTag, Square, p_, aCenter, aRight);
+                          }
+                      }
                     Font->ColourBG = c;
+                    p_ [0] = PieceToChar (Board [x][y]);
                     TextOutAligned (Font, Square, p_, aCenter, aCenter);
                     /* //Debug - testing pieces attributes
                     if (Board [x][y] & pChecked)
@@ -138,14 +186,14 @@ void _BoardC::DrawCustom ()
         }
   }
 
-bool _BoardC::ProcessEventCustom (_Event *Event, _Point Offset)
+bool _ChessBoard::ProcessEventCustom (_Event *Event, _Point Offset)
   {
     int dx, dy;
     _Coord Sel;
     bool Res;
     //
     Res = false;
-    if (IsEventMine (Event, Offset))
+    if (IsEventMine (Event, Offset) && !PlayThreadStarted)
       {
         dx = Rect.Width / 8;
         dy = Rect.Height / 8;
@@ -169,14 +217,15 @@ bool _BoardC::ProcessEventCustom (_Event *Event, _Point Offset)
             Res = true;
           }
         else if (Event->Type == etMouseUp && Event->Key == KeyMouseLeft)
-          {
-            if (MoveFrom.x == MoveTo.x && MoveFrom.y == MoveTo.y)   // we haven't moved
-              MoveStart = false;
-            else
-              MoveComplete = true;
-            Invalidate (true);
-            Res = true;
-          }
+          if (MoveStart)
+            {
+              if (MoveFrom.x == MoveTo.x && MoveFrom.y == MoveTo.y)   // we haven't moved
+                MoveStart = false;
+              else
+                MoveComplete = true;
+              Invalidate (true);
+              Res = true;
+            }
       }
     return Res;
   }
@@ -188,7 +237,7 @@ bool _BoardC::ProcessEventCustom (_Event *Event, _Point Offset)
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-_BoardC *cBoard;
+_ChessBoard *cBoard;
 _Form *fProperties;
 _Button *bProperties;
 _Label *lDepth;
@@ -217,7 +266,7 @@ void ActionDepth (_Container *Container)
     //
     b = (_ButtonArrow *) Container;
     if (b)
-      if (!b->Down)
+      if (!b->Down && !PlayThreadStarted)
         if (b->Direction == dUp)
           DepthPlay = Min (DepthPlay + 1, 9);
         else if (b->Direction == dDown)
@@ -339,92 +388,98 @@ void ActionRestart (_Container *Container)
 void ActionQuit (_Container *Container)
   {
     if (!((_Button *) Container)->Down)
-      GameOver = true;
+      Exit = true;
   }
 
 void ActionMenu (_Container *Container)
   {
     _Menu *Menu;
-    int f;   // file ID
     //
     Menu = (_Menu *) Container;
+    if (!PlayThreadStarted)
     if (Menu->Selected == 0)   // Reload
-      {
-        f = FileOpen ("board.dat", foRead);
-        if (f >= 0)
-          {
-            FileRead (f, (byte *) Board, sizeof (Board));
-            FileClose (f);
-            Refresh = true;
-          }
-      }
+      Load = true;
     else if (Menu->Selected == 1)   // Save
-      {
-        f = FileOpen ("board.dat", foWrite);
-        FileWrite (f, (byte *) Board, sizeof (Board));
-        FileClose (f);
-      }
+      Save = true;
+    //Menu->SelectionList->Die ();
   }
 
-bool TakePiece (_Coord Pos, char **stat, char **grave)
+bool TakePiece (_Coord Pos, char **Log, char *Graveyard)
   {
     _Piece p;
+    int l;
+    char *g;
     //
     p = (_Piece) Board [Pos.x][Pos.y];
     if (Piece (p) != pEmpty)
       {
-        StrCat (stat, "**");
-        StrCat (grave, PieceToChar (p));
+        if (Log)
+          StrCat (Log, "**");
+        if (Graveyard)
+          {
+            g = StrPos (Graveyard, '\n');
+            if (g == NULL)
+              {
+                Graveyard [0] = '\n';
+                Graveyard [1] = 0;
+                g = Graveyard;
+              }
+            if (PieceWhite (p))
+              StrInsert (g, PieceToChar (p));
+            else
+              StrAppend (Graveyard, PieceToChar (p));
+          }
         return true;
       }
     return false;
   }
 
-const int StatusSize = 2000;
+const int LogSize = 2000;
 
 int main_ (int argc, char *argv [])
   {
     _Coord FormSize = {650, 600};
     int BoardWidth = 500;
-    int btn = 64;
+    int btn = 56;
     _Form *Form;
     _Container *Toolbar;
-    _Button *bUndo, *bPlay, *bRestart, *bQuit;
+    _Button *bUndo, *bPlay, *bRestart, *bEdit, *bQuit;
     _Label *lMessage;
     _Label *lGraveyard;
     _Label *lPCStats;
     _Label *lLog;
+    _Wait *Wait;
     _MenuPopup *Menu;
     bool PCPlay;
     _Coord PCFrom, PCTo;
-    int PlayTime;
-    int PlayScore;
+    //int PlayScore;
     int x, y;
-    char *Status, *sS;
-    char Graveyard [64], *sG, *sGOld;
+    char *Log, *sLog;
+    char Graveyard [100], GraveyardOld [100];
     char PCStats [100], *pPC;
     _SpecialMove sm;
     _Board BoardOld;
     bool CanUndo;
+    char *Name;
+    int f;   // file ID
     //
     DebugAddS ("===========Start Chess", Revision);
     BoardInit ();
     PlayerWhite = true;
     PCPlay = false;
-    Status = (char *) malloc (StatusSize);
+    Log = (char *) malloc (LogSize);
     // Make the Main Form
-    sS = Status;   // Build the form Title
-    StrCat (&sS, "Stewy's Chess Programme - ");
-    StrCat (&sS, Revision);
-    *sS = 0;
-    Form = new _Form (Status, {100, 100, FormSize.x, FormSize.y}, waResizable);
-    sS = Status;
-    sG = Graveyard;
+    sLog = Log;   // Build the form Title
+    StrCat (&sLog, "Stewy's Chess Programme - ");
+    StrCat (&sLog, Revision);
+    *sLog = 0;
+    Form = new _Form (Log, {100, 100, FormSize.x, FormSize.y}, waResizable);
+    sLog = Log;
     Form->Container->FontSet ("ARI.ttf", 14);
     Form->Container->Bitmap = BitmapLoad (Form->Window, "Chess.bmp");
     y = 0;
     // build Toolbar
-    Toolbar = new _Container (Form->Container, {0, y, 0, 50});
+    Toolbar = new _Container (Form->Container, {0, y, 0, 45});
     Toolbar->Colour = ColourAdjust (cForm1, 80);
     x = 0;
     bProperties = new _Button (Toolbar, {x, 0, btn, 0}, "\e0\nSetup", (_Action) ActionProperties); x += btn;
@@ -432,27 +487,31 @@ int main_ (int argc, char *argv [])
     bUndo = new _Button (Toolbar, {x, 0, btn, 0}, "\e1\nUndo", (_Action) ActionUndo); x += btn;
     bPlay = new _Button (Toolbar, {x, 0, btn, 0}, "\e2\nPlay", (_Action) ActionPlay); x += btn;
     bRestart = new _Button (Toolbar, {x, 0, btn, 0}, "\e3\nRestart", (_Action) ActionRestart); x += btn;
-    bQuit = new _Button (Toolbar, {x, 0, btn, 0}, "\e4\nQuit", (_Action) ActionQuit); x += btn;
+    bEdit = new _Button (Toolbar, {x, 0, btn, 0}, "\e4\nEdit"); x += btn;
+    bEdit->Toggle = true;
+    bQuit = new _Button (Toolbar, {x, 0, btn, 0}, "\e5\nQuit", (_Action) ActionQuit); x += btn;
     y += Toolbar->Rect.Height;
     lMessage = new _Label (Toolbar, {x, 0, 0, 0}, NULL, aCenter);
-    lMessage->FontSet (NULL, 35, fsBold);
+    lMessage->FontSet (NULL, 30, fsBold);
     lMessage->Colour = cRed;
     lMessage->VisibleSet (false);
     // Dead Pieces go to the Graveyard
-    lGraveyard = new _Label (Form->Container, {0, y, 0, 28}, NULL, aLeft);
-    lGraveyard->FontSet ("CHEQ_TT.TTF", lGraveyard->Rect.Height);
-    y += 28;
+    lGraveyard = new _Label (Form->Container, {0, y, BoardWidth, 60}, NULL, aLeft);
+    lGraveyard->FontSet ("CHEQ_TT.TTF", lGraveyard->Rect.Height / 2 - 1);
+    lGraveyard->RectLock |= rlRight;
+    y += lGraveyard->Rect.Height;
     //
     x = 0;
-    cBoard = new _BoardC (Form->Container, {x, y, BoardWidth, Form->Container->Rect.Height - y - 20});
+    cBoard = new _ChessBoard (Form->Container, {x, y, BoardWidth, Form->Container->Rect.Height - y - 20});
     cBoard->RectLock |= rlRight + rlBottom;
-    cBoard->Colour = cGray;
+    //cBoard->Colour = cGray;
+    y + cBoard->Rect.Height;
     x += BoardWidth;
     //
-    lLog = new _Label (Form->Container, {x + 8, y, 0, cBoard->Rect.Height}, NULL, aLeft, bNone);
+    lLog = new _Label (Form->Container, {x + 8, Toolbar->Rect.Height, 0, lGraveyard->Rect.Height + cBoard->Rect.Height - 8}, NULL, aLeft, bNone);
     lLog->RectLock = rlLeft | rlBottom;
     lLog->AlignVert = aRight;   // = Bottom
-    lLog->ColourText = ColourAdjust (cAqua, 40);  // ColourAdjust (cOrange, 70);
+    lLog->ColourText = ColourAdjust (cAqua, 20); //ColourAdjust (cOrange, 70); cBrown;
     lLog->FontSet ("ARI.ttf", 14, fsBold);
     y += cBoard->Rect.Height;
     //
@@ -460,11 +519,14 @@ int main_ (int argc, char *argv [])
     lPCStats->RectLock = rlTop | rlBottom;
     lPCStats->ColourText = ColourAdjust (cGreen, 30);
     //
+    Wait = new _Wait (lLog, {0, 0, 0, 0});
+    Wait->VisibleSet (false);
+    //
     Menu = new _MenuPopup (Form->Container, {}, "Reload\tSave", ActionMenu);
     // Main Loop
     Restart = true;
     PlayForMe = PCPlay = CanUndo = false;
-    while (!GameOver)
+    while (!Exit)
       {
         usleep (1000);
         if (Restart)
@@ -474,15 +536,47 @@ int main_ (int argc, char *argv [])
             BoardInit ();
             cBoard->MoveFrom.x = -1;
             cBoard->PCFrom.x = -1;
-            sG = Graveyard;
-            sS = Status;
+            Graveyard [0] = 0;
+            sLog = Log;
             lMessage->VisibleSet (false);
             lPCStats->TextSet (NULL);
             Refresh = true;
             Undo = CanUndo = false;
           }
-        else if (sS - Status  + 50 > StatusSize)   // the problem of c strings is ...
-          sS = Status;
+        else if (sLog - Log + 50 > LogSize)   // the problem of c strings is ...
+          sLog = Log;
+        if (Load)
+          {
+            Load = false;
+            Form->Container->EnabledSet (false);
+            if (FileSelect (&Name, ".dat", false))
+              {
+                f = FileOpen (Name, foRead);
+                if (f >= 0)
+                  {
+                    FileRead (f, (byte *) Board, sizeof (Board));
+                    FileClose (f);
+                    cBoard->MoveFrom.x = -1;
+                    cBoard->PCFrom.x = -1;
+                    sLog = Log;
+                    Refresh = true;
+                  }
+                free (Name);
+              }
+            Form->Container->EnabledSet (true);
+          }
+        if (Save)
+          {
+            Save = false;
+            Form->Container->EnabledSet (false);
+            if (FileSelect (&Name, ".dat", true))
+              {
+                f = FileOpen (Name, foWrite);
+                FileWrite (f, (byte *) Board, sizeof (Board));
+                FileClose (f);
+              }
+            Form->Container->EnabledSet (true);
+          }
         if (Undo)
           {
             Undo = false;
@@ -492,111 +586,140 @@ int main_ (int argc, char *argv [])
                 memcpy (Board, BoardOld, sizeof (_Board));
                 cBoard->MoveFrom.x = -1;
                 cBoard->PCFrom.x = -1;
-                sG = sGOld;
+                strcpy (Graveyard, GraveyardOld);
                 MoveCount--;
                 Refresh = true;
               }
           }
+        if (PlayThreadFinished)
+          {
+            PlayThreadFinished = false;
+            Toolbar->EnabledSet (true);
+            if (PlayThreadWhite == PlayerWhite)   // playing for the human
+              if (PlayThreadScore == MININT)
+                {
+                  lMessage->TextSet ("No Moves, Give up");
+                  lMessage->VisibleSet (true);
+                }
+              else
+                {
+                  cBoard->MoveFrom = BestA [0];
+                  cBoard->MoveTo = BestB [0];
+                  cBoard->MoveComplete = true;
+                }
+            else   // playing for the PC
+              {
+                if (PlayThreadScore == MININT)
+                  {
+                    lMessage->TextSet ("I Surrender");
+                    lMessage->VisibleSet (true);
+                  }
+                else
+                  {
+                    pPC = PCStats;
+                    StrCat (&pPC, "PC Move Stats: ");
+                    IntToStr (&pPC, MovesConsidered, DigitsCommas);
+                    StrCat (&pPC, " moves.  Score ");
+                    IntToStr (&pPC, PlayThreadScore, DigitsCommas);
+                    StrCat (&pPC, ".  Time ");
+                    NumToStrDecimals (&pPC, PlayThreadTime, 3);
+                    StrCat (&pPC, " s.  ");
+                    /*for (x = 0; x < DepthPlay; x++)
+                      {
+                        CoordToStr (&pPC, BestA [x]);
+                        StrCat (&pPC, '-');
+                        CoordToStr (&pPC, BestB [x]);
+                        StrCat (&pPC, ' ');
+                      }*/
+                    *pPC = 0;
+                    lPCStats->TextSet (PCStats);
+                    PCFrom = BestA [0];
+                    PCTo = BestB [0];
+                    CoordToStr (&sLog, PCFrom);
+                    CoordToStr (&sLog, PCTo);
+                    TakePiece (PCTo, &sLog, Graveyard);
+                    sm = MovePiece (PCFrom, PCTo);
+                    cBoard->PCFrom = PCFrom;
+                    cBoard->PCTo = PCTo;
+                    cBoard->Invalidate (true);
+                    if (sm != smNone)
+                      StrCat (&sLog, '+');
+                    if (InCheck (PlayerWhite))
+                      {
+                        lMessage->TextSet ("IN CHECK");
+                        lMessage->VisibleSet (true);
+                      }
+                    else
+                      lMessage->VisibleSet (false);
+                  }
+                MoveCount++;
+                StrCat (&sLog, '\n');
+                Refresh = true;
+              }
+            //cBoard->EnabledSet (true);
+            Wait->VisibleSet (false);
+          }
         if (PCPlay)
           {
             PCPlay = false;
-            MovesConsidered = 0;
-            PlayTime = ClockMS ();
+            Toolbar->EnabledSet (false);
             InCheck (!PlayerWhite);   // Mark PC King if in check
-            PlayScore = BestMove (!PlayerWhite, 0);
-            if (PlayScore != MININT)
-              {
-                pPC = PCStats;
-                StrCat (&pPC, "PC Move Stats: ");
-                IntToStr (&pPC, MovesConsidered, DigitsCommas);
-                StrCat (&pPC, " moves.  Score ");
-                IntToStr (&pPC, PlayScore, DigitsCommas);
-                StrCat (&pPC, ".  Time ");
-                NumToStrDecimals (&pPC, ClockMS () - PlayTime, 3);
-                StrCat (&pPC, " s.  ");
-                for (x = 0; x < DepthPlay; x++)
-                  {
-                    CoordToStr (&pPC, BestA_ [x]);
-                    StrCat (&pPC, '-');
-                    CoordToStr (&pPC, BestB_ [x]);
-                    StrCat (&pPC, ' ');
-                  }
-                *pPC = 0;
-                lPCStats->TextSet (PCStats);
-                PCFrom = BestA [0];
-                PCTo = BestB [0];
-                CoordToStr (&sS, PCFrom);
-                CoordToStr (&sS, PCTo);
-                TakePiece (PCTo, &sS, &sG);
-                sm = MovePiece (PCFrom, PCTo);
-                MoveCount++;
-                cBoard->PCFrom = PCFrom;
-                cBoard->PCTo = PCTo;
-                cBoard->Invalidate (true);
-                if (sm != smNone)
-                  StrCat (&sS, '+');
-                StrCat (&sS, '\n');
-                Refresh = true;
-              }
-            if (InCheck (!PlayerWhite))   // I can't save my King
-              {
-                lMessage->TextSet ("I SURRENDER");
-                lMessage->VisibleSet (true);
-              }
-            else if (InCheck (PlayerWhite))
-              {
-                lMessage->TextSet ("IN CHECK");
-                lMessage->VisibleSet (true);
-              }
-            else
-              lMessage->VisibleSet (false);
+            StartThread (PlayThread, (void *) !PlayerWhite);
+            Wait->ColourText = ColourAdjust (cGreen, 25);
+            Wait->VisibleSet (true);
           }
         if (PlayForMe)
           {
             PlayForMe = false;
-            PlayScore = BestMove (PlayerWhite, 0);
-            if (PlayScore != MININT)
-              {
-                cBoard->MoveFrom = BestA [0];
-                cBoard->MoveTo = BestB [0];
-                cBoard->MoveComplete = true;
-              }
+            Toolbar->EnabledSet (false);
+            StartThread (PlayThread, (void *) PlayerWhite);
+            Wait->ColourText = ColourAdjust (cBlue, 50);
+            Wait->VisibleSet (true);
           }
         if (cBoard->MoveComplete)
           {
-            memcpy (BoardOld, Board, sizeof (_Board));   // save board for undo
-            sGOld = sG;   // and the graveyard
-            CanUndo = true;
             cBoard->MoveStart = false;
             cBoard->MoveComplete = false;
-            StrCat (&sS, '[');
-            IntToStr (&sS, MoveCount);
-            StrCat (&sS, "] ");
-            CoordToStr (&sS, cBoard->MoveFrom);
-            CoordToStr (&sS, cBoard->MoveTo);
-            if (MoveValid (cBoard->MoveFrom, cBoard->MoveTo))
+            if (bEdit->Down)
               {
-                TakePiece (cBoard->MoveTo, &sS, &sG);
-                sm = MovePiece (cBoard->MoveFrom, cBoard->MoveTo);
-                if (sm != smNone)
-                  StrCat (&sS, '+');
-                StrCat (&sS, ' ');
-                if (InCheck (PlayerWhite))   // You moved into / stayed in Check
-                  {
-                    memcpy (Board, BoardOld, sizeof (_Board));   // undo move
-                    sG = sGOld;   // fix graves
-                    CanUndo = false;
-                    lMessage->TextSet ("Save Your King");
-                    lMessage->VisibleSet (true);
-                    StrCat (&sS, '\n');
-                  }
-                else
-                  PCPlay = true;
+                TakePiece (cBoard->MoveTo, NULL, Graveyard);
+                Board [cBoard->MoveTo.x][cBoard->MoveTo.y] = Board [cBoard->MoveFrom.x][cBoard->MoveFrom.y];
+                Board [cBoard->MoveFrom.x][cBoard->MoveFrom.y] = pEmpty;
               }
             else
               {
-                StrCat (&sS, " Error\n");
-                cBoard->MoveFrom.x = -1;
+                memcpy (BoardOld, Board, sizeof (_Board));   // save board for undo
+                strcpy (GraveyardOld, Graveyard);
+                CanUndo = true;
+                StrCat (&sLog, '[');
+                IntToStr (&sLog, MoveCount);
+                StrCat (&sLog, "] ");
+                CoordToStr (&sLog, cBoard->MoveFrom);
+                CoordToStr (&sLog, cBoard->MoveTo);
+                if (MoveValid (cBoard->MoveFrom, cBoard->MoveTo))
+                  {
+                    TakePiece (cBoard->MoveTo, &sLog, Graveyard);
+                    sm = MovePiece (cBoard->MoveFrom, cBoard->MoveTo);
+                    if (sm != smNone)
+                      StrCat (&sLog, '+');
+                    StrCat (&sLog, ' ');
+                    if (InCheck (PlayerWhite))   // You moved into / stayed in Check
+                      {
+                        memcpy (Board, BoardOld, sizeof (_Board));   // undo move
+                        strcpy (Graveyard, GraveyardOld);
+                        CanUndo = false;
+                        lMessage->TextSet ("Save Your King");
+                        lMessage->VisibleSet (true);
+                        StrCat (&sLog, " Error\n");
+                      }
+                    else
+                      PCPlay = true;
+                  }
+                else
+                  {
+                    StrCat (&sLog, " Error\n");
+                    cBoard->MoveFrom.x = -1;
+                  }
               }
             Refresh = true;
           }
@@ -604,16 +727,25 @@ int main_ (int argc, char *argv [])
           {
             Refresh = false;
             cBoard->Invalidate (true);
-            *sG = 0;
             lGraveyard->TextSet (Graveyard);
-            *sS = 0;
-            lLog->TextSet (Status);
+            *sLog = 0;
+            lLog->TextSet (Log);
           }
         if (FormsUpdate ())
           break;
       }
     while (FormList)
       delete (FormList);
-    free (Status);
+    free (Log);
     return 0;
   }
+
+
+/********************************************************************************************************************* JUNK
+                Name = (char *) malloc (64);
+                sN = Name;
+                StrCat (&sN, "board");
+                CurrentDateTimeToStr (&sN, true, true);
+                StrCat (&sN, ".dat");
+                *sN = 0;
+*********************************************************************************************************************/

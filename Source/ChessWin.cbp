@@ -47,9 +47,11 @@
 			<Add library="C:/Windows/System32/ws2_32.dll" />
 			<Add library="libwinpthread.a" />
 		</Linker>
+		<Unit filename="../Widgets/FileSelect.cpp" />
 		<Unit filename="../Widgets/Widgets.cpp" />
 		<Unit filename="../Widgets/WidgetsDriverWin.cpp" />
 		<Unit filename="../Widgets/WidgetsEdit.cpp" />
+		<Unit filename="../Widgets/WidgetsGrid.cpp" />
 		<Unit filename="../Widgets/WidgetsImages.cpp" />
 		<Unit filename="../Widgets/WidgetsText.cpp" />
 		<Unit filename="../Widgets/lib.cpp" />
