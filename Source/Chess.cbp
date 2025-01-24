@@ -39,6 +39,7 @@
 			<Add library="freetype" />
 			<Add library="libjpeg" />
 			<Add library="libpng" />
+			<Add library="Xext" />
 		</Linker>
 		<Unit filename="../Widgets/FileSelect.cpp" />
 		<Unit filename="../Widgets/Widgets.cpp" />
