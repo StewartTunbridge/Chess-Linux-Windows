@@ -48,6 +48,7 @@
 			<Add library="C:/Windows/System32/ws2_32.dll" />
 			<Add library="libwinpthread.a" />
 		</Linker>
+		<Unit filename="../Widgets/ColourSelect.cpp" />
 		<Unit filename="../Widgets/FileSelect.cpp" />
 		<Unit filename="../Widgets/Widgets.cpp" />
 		<Unit filename="../Widgets/WidgetsDriverWin.cpp" />
