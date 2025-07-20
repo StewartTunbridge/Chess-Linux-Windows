@@ -35,15 +35,15 @@
 			<Add option="-fpermissive" />
 			<Add option="-Wno-write-strings" />
 			<Add option="-Wno-dangling-else" />
-			<Add option="-static" />
 			<Add directory="../" />
-			<Add directory="/usr/include/freetype2" />
 			<Add directory="C:/Users/stewa/Desktop/freetype-2.13.3/include" />
 			<Add directory="../Widgets" />
 		</Compiler>
 		<Linker>
 			<Add option="-static-libstdc++" />
 			<Add option="-static-libgcc" />
+			<Add option="-static" />
+			<Add option="-mwindows" />
 			<Add library="../Widgets/freetype.lib" />
 			<Add library="C:/Windows/System32/gdi32.dll" />
 			<Add library="C:/Windows/System32/ws2_32.dll" />
@@ -52,6 +52,7 @@
 		<Unit filename="../Widgets/ColourSelect.cpp" />
 		<Unit filename="../Widgets/FileSelect.cpp" />
 		<Unit filename="../Widgets/MessageBox.cpp" />
+		<Unit filename="../Widgets/MessageResponseBox.cpp" />
 		<Unit filename="../Widgets/Widgets.cpp" />
 		<Unit filename="../Widgets/WidgetsDriverWin.cpp" />
 		<Unit filename="../Widgets/WidgetsEdit.cpp" />

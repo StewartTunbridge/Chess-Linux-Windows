@@ -6,10 +6,16 @@
 // Email:  stewarttunbridge@gmail.com
 // Copyright (c) 2024 Stewart Tunbridge, Pi Micros
 //
+//
+// TODO:
+// / Check: Undo when playing Black
+// / Stats => [White/Black] Stats .... Score = ####{relative to the Stats subject}
+// Castle: Still allows castle thru threatened square
+//
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-const char Revision [] = "1.52";
+const char Revision [] = "1.8";
 
 #include <stdio.h>
 #include <unistd.h>
@@ -20,8 +26,7 @@ const char Revision [] = "1.52";
 #include "../Widgets/FileSelect.hpp"
 #include "../Widgets/ColourSelect.hpp"
 #include "../Widgets/MessageBox.hpp"
-
-#include "../Widgets/libini.hpp"
+#include "../Widgets/MessageResponseBox.hpp"
 
 #include "../ConsoleApps/chess/Chess.c"
 
@@ -53,12 +58,12 @@ void CoordToStr (char **s, _Coord Pos)
     *(*s)++ = Pos.y + '1';
   }
 
-int MoveCount;
 bool Refresh;
 bool Exit;
 bool Load;
 bool Save;
 bool SaveLog;
+bool PCPlayForever;
 
 bool PlayThreadWhite;
 bool PlayThreadStarted;
@@ -107,9 +112,9 @@ int WhitePieceToUChar [3][8] = {
 void PieceToChar (char **Dest, _Piece Pce)
   {
     if (PieceWhite (Pce))
-      UTF8FromInt (Dest, WhitePieceToUChar [FontPiecesMap][Piece (Pce)]);
+      UTF32ToStr (Dest, WhitePieceToUChar [FontPiecesMap][Piece (Pce)]);
     else
-      UTF8FromInt (Dest, BlackPieceToUChar [FontPiecesMap][Piece (Pce)]);
+      UTF32ToStr (Dest, BlackPieceToUChar [FontPiecesMap][Piece (Pce)]);
   }
 
 void AllPieces (char *Res)
@@ -143,7 +148,7 @@ bool FontsCallBack (_DirItem *Item)
 
 int FontsRead (void)
   {
-    DirRead (&Fonts, FontsCallBack);
+    DirRead (NULL, &Fonts, FontsCallBack);
     Fonts = ListSort (Fonts, DirItemsCompare);
     if (Fonts)
       FontPieces = Fonts->Name;
@@ -153,6 +158,8 @@ int FontsRead (void)
 class _ChessBoard: public _Container
   {
     public:
+      bool RotateAllowed;
+      bool Rotate;
       int Colours [2];
       bool MoveStart, MoveComplete;
       _Coord Move [2];   // Human move
@@ -161,14 +168,17 @@ class _ChessBoard: public _Container
       bool LegalMoves [8][8];
       //
       _ChessBoard (_Container *Parent, _Rect Rect);
-      ~_ChessBoard ();
       void DrawCustom (void);
       bool ProcessEventCustom (_Event *Event, _Point Offset);
+      void TranslateCoord (_Coord *Pos);
+      void BoardSquare (_Coord Pos, _Rect *Res);
+      _Point BoardSquareCenter (_Coord Pos);
+      void DrawVector (_Coord Move []);
   };
 
 _ChessBoard::_ChessBoard (_Container *Parent, _Rect Rect) : _Container (Parent, Rect)
   {
-    Colour = cBlack;
+    RotateAllowed = true;
     Colours [0] = ColourAdjust (cBrown, 140);
     Colours [1] = ColourAdjust (cBrown, 180);
     MoveStart = MoveComplete = false;
@@ -178,172 +188,188 @@ _ChessBoard::_ChessBoard (_Container *Parent, _Rect Rect) : _Container (Parent, 
     memset (LegalMoves, false, sizeof (LegalMoves));
   }
 
-_ChessBoard::~_ChessBoard ()
-  {
-  }
-
 const int cGreenGray = 0x9cf09c;
-//const int cBlueGray = 0xff9c9c;
 const int cBlueGray = 0xffaaaa;
 
-#define CenterX(bx) (bx * dx + dx/2)
-#define CenterY(by) ((7-by) * dy + dy/2)
-
-void _ChessBoard::DrawCustom ()
+void _ChessBoard::TranslateCoord (_Coord *Pos)
   {
-    int dx, dy;
-    _Rect Square;
-    _Coord Center;
-    int x, y, Pass;
-    int c;
-    char p_ [8], *p__;
-    _Font *FontTag;
-    int cFG, cBG;
+    if (Rotate)
+      {
+        Pos->x = 7 - Pos->x;
+        Pos->y = 7 - Pos->y;
+      }
+  }
+void _ChessBoard::BoardSquare (_Coord Pos, _Rect *Res)
+  {
+    int dx = Rect.Width / 8;
+    int dy = Rect.Height / 8;
+    TranslateCoord (&Pos);
+    *Res = {Pos.x * dx, (7 - Pos.y) * dy, dx, dy};
+  }
+
+_Point _ChessBoard::BoardSquareCenter (_Coord Pos)
+  {
+    int dx = Rect.Width / 8;
+    int dy = Rect.Height / 8;
+    TranslateCoord (&Pos);
+    return {Pos.x * dx + dx / 2, (7 - Pos.y) * dy + dy / 2};
+  }
+
+void _ChessBoard::DrawVector (_Coord Move [])
+  {
+    _Point p0, p1;
     int Width;
-    //int id;
-    //int t;//####
     //
-    //t = ClockMS ();
-    Time1 = Time2 = Time3 = 0;
-    dx = Rect.Width / 8;
-    dy = Rect.Height / 8;
-    Width = Max (1, dx / 16);
-    FontTag = Parent->FontFind ();   // Use the Forms "normal" font for Tags
-    if (FontSet (FontPieces, dy * 4 / 5))   // fonts4free.net/chess-font.html
-      for (Pass = 0; Pass < 2; Pass++)
-        {
-          for (y = 0; y < 8; y++)
-            for (x = 0; x < 8; x++)
-              {
-                Square = {x * dx, (7 - y) * dy, dx, dy};
-                Center = {Square.x + dx / 2, Square.y + dy / 2};
-                c = Colours [(x ^ y) & 1];
-                if (MoveStart)
-                  if ((x == Move [0].x && y == Move [0].y) || (x == Move [1].x && y == Move [1].y))
-                    c = cWhite;
-                if (Pass == 0)
-                  DrawRectangle (Square, cBlack, cBlack, c);
-                else   // Pass == 1
-                  {
-                    Square.x++;
-                    Square.Width--;
-                    if (dy > 40 && FontTag)
-                      {
-                        cBG = FontTag->ColourBG;
-                        cFG = FontTag->Colour;
-                        FontTag->ColourBG = c;
-                        FontTag->Colour = ColourAdjust (cBlue, 70);
-                        if (x == 0)
-                          {
-                            p_ [0] = y + '1';
-                            TextOutAligned (FontTag, Square, p_, aLeft, aCenter);
-                          }
-                        if (y == 0)
-                          {
-                            p_ [0] = x + 'a';
-                            TextOutAligned (FontTag, Square, p_, aCenter, aRight);
-                          }
-                        /*/ Debug
-                        int id = Board [x][y] / pMoveID;
-                        if (id)
-                          {
-                            char s [16], *ss = s;
-                            //NumToHex (&ss, Board [x][y]);
-                            NumToStr (&ss, id);
-                            *ss = 0;
-                            TextOutAligned (FontTag, Square, s, aRight, aTop);
-                          }*/
-                        FontTag->ColourBG = cBG;
-                        FontTag->Colour = cFG;
-                      }
-                    Font->ColourBG = c;
-                    p__ = p_;
-                    PieceToChar (&p__, Board [x][y]);
-                    *p__ = 0;
-                    TextOutAligned (Font, Square, p_, aCenter, aCenter);
-                    if (Board [x][y] & pChecked)
-                      DrawCircle (Center.x, Center.y, Max (dx / 16, 1), cRed, ColourAdjust (cRed, 150), 1);
-                    if (LegalMovesShow && LegalMoves [x][y])
-                      {
-                        DrawLine (Center.x - dx / 8, Center.y - dy / 8, Center.x + dx / 8, Center.y + dy / 8, cWhite, Width);
-                        DrawLine (Center.x + dx / 8, Center.y - dy / 8, Center.x - dx / 8, Center.y + dy / 8, cWhite, Width);
-                      }
-                  }
-              }
-          if (Pass == 0)   // Draw User and PC move "arrows"
+    if (Move [0].x >= 0)
+      {
+        p0 = BoardSquareCenter (Move [0]);
+        p1 = BoardSquareCenter (Move [1]);
+        Width = Max (1, Rect.Width / 8 / 40);
+        DrawLine (p0.x, p0.y, p1.x, p1.y, cBlack, Width);//cGreenGray cGrayDark cGray
+        DrawCircle (p0.x, p0.y, 3 * Width, -1, cBlack, 0);//
+      }
+  }
+
+void _ChessBoard::DrawCustom (void)
+  {
+    _Rect Square, s;
+    _Point Center;
+    int x, y, Pass;
+    _Piece p;
+    char St [8], *c;
+    int WidthLine;
+    int WidthCross;
+    //
+    Rotate = !PlayerWhite && RotateAllowed;
+    WidthLine = Max (1, Rect.Width / 8 / 24);
+    WidthCross = Rect.Width / 8 / 8;   // Half width of cross
+    FontSet (FontPieces, (Rect.Height / 8) -2);//* 5 / 6);
+    for (Pass = 0; Pass < 2; Pass++)
+      {
+        if (Pass == 1)
+          FontSet (NULL, (Rect.Height / 8) * 3 / 10, fsBold);
+        for (y = 0; y < 8; y++)   // for all squares
+          for (x = 0; x < 8; x++)
             {
-              if (MovePC [0].x >= 0)
+              BoardSquare ({x, y}, &Square);
+              Center = BoardSquareCenter ({x, y});
+              ColourGrad = Colour = Colours [(x ^ y) & 1];
+              if (MoveStart)
+                if ((x == Move [0].x && y == Move [0].y) || (x == Move [1].x && y == Move [1].y))
+                  Colour = cWhite;
+              if (Pass == 0)
                 {
-                  DrawLine (MovePC [0].x * dx + dx / 2, (7 - MovePC [0].y) * dy + dy / 2, MovePC [1].x * dx + dx / 2, (7 - MovePC [1].y) * dy + dy / 2, cGreenGray, Width);
-                  DrawCircle (CenterX (MovePC [0].x), CenterY (MovePC [0].y), 2 * Width, -1, cGreenGray, 0);
+                  DrawRectangle (Square, cBlack, cBlack, Colour);   // Background
+                  p = Board [x][y];
+                  if (Piece (p) != pEmpty)
+                    {
+                      c = St;   // Piece
+                      PieceToChar (&c, p);
+                      *c = 0;
+                      TextOutAligned (Square, St, aCenter, aCenter);
+                    }
+                  if (p & pChecked || ((p & pPawn2) && (p / pMoveID == MoveID)))
+                    DrawCircle (Center.x, Center.y, Max (Rect.Width / 8 / 16, 1), cRed, ColourAdjust (cRed, 150), 1);
+                  if (LegalMovesShow && LegalMoves [x][y])   // Legal moves
+                    {
+                      DrawLine (Center.x - WidthCross, Center.y - WidthCross, Center.x + WidthCross, Center.y + WidthCross, cWhite, WidthLine);
+                      DrawLine (Center.x + WidthCross, Center.y - WidthCross, Center.x - WidthCross, Center.y + WidthCross, cWhite, WidthLine);
+                    }
                 }
-              if (Move [0].x >= 0)
-                {
-                  DrawLine (Move [0].x * dx + dx / 2, (7 - Move [0].y) * dy + dy / 2, Move [1].x * dx + dx / 2, (7 - Move [1].y) * dy + dy / 2, cBlueGray, Width);
-                  DrawCircle (CenterX (Move [0].x), CenterY (Move [0].y), 2 * Width, -1, cBlueGray, 0);
-                }
+              else   // Pass == 1
+                if (Square.Height > 40)   // Large enough for Column / Row markers?
+                  {
+                    s = AddMargin (Square, {2, 1});
+                    ColourText = Colours [(x ^ y) & 1 ^ 1];   // Write in other square colour
+                    St [1] = 0;   // terminate string before it's made
+                    if (x == 0)
+                      {
+                        St [0] = y + '1';
+                        TextOutAligned (s, St, Rotate ? aRight : aLeft, Rotate ? aBottom : aTop);
+                      }
+                    if (y == 0)
+                      {
+                        St [0] = x + 'a';
+                        TextOutAligned (s, St, Rotate ? aLeft : aRight, Rotate ? aTop : aBottom);
+                      }
+                    ColourText = -1;   // back to normal (black)
+                    /*if (Controlled [x][y] & 0x01)   // Controlled by Black
+                      DrawCircle (Square.x + 4, Square.y + 4, 4, -1, cBlack);
+                    if (Controlled [x][y] & 0x02)   // Controlled by White
+                      DrawCircle (Square.x + 4, Square.y + 8, 4, -1, cWhite);*/
+                  }
             }
-        }
-    //DebugAdd ("Draw Board ", ClockMS () - t);
-    //DebugAdd ("Draw Board RenderBitmap time (uS) ", Time1); //####
-    //DebugAdd ("Draw Board RenderBitmap make trans masks time (uS) ", Time2); //####
-    //DebugAdd ("Draw Board RenderBitmap put up img time (uS) ", Time3); //####
+      }
+    DrawVector (MovePC);
+    DrawVector (Move);
+    Colour = -1;   // Revert to transparent
   }
 
 bool _ChessBoard::ProcessEventCustom (_Event *Event, _Point Offset)
   {
-    int dx, dy;
     _Coord Sel, Moves [64], *m;
     bool Res;
     //
     Res = false;
-    if (IsEventMine (Event, Offset) && !PlayThreadStarted)
-      {
-        dx = Rect.Width / 8;
-        dy = Rect.Height / 8;
-        Sel.x = (Event->X - Offset.x) / dx;
-        Sel.y = 7 - ((Event->Y - Offset.y) / dy);
-        if (Event->Type == etMouseDown && Event->Key == KeyMouseLeft)
-          {
-            Move [0] = Sel;
-            Move [1] = Sel;
-            // Store possible moves in MovePos []
-            memset (LegalMoves, false, sizeof (LegalMoves));
-            if (Piece (Board [Sel.x][Sel.y]) != pEmpty)
-              {
-                GetPieceMoves (Sel, Moves);
-                m = Moves;
-                while (m->x >= 0)   // for all moves
-                  {
-                    LegalMoves [m->x][m->y] = true;
-                    m++;
-                  }
-              }
-            MoveStart = true;
-            Invalidate (true);
-            Res = true;
-          }
-        else if (Event->Type == etMouseMove && MoveStart)
-          {
-            if (Sel.x != Move [1].x || Sel.y != Move [1].y)
-              {
-                Move [1] = Sel;
-                Invalidate (true);
-              }
-            Res = true;
-          }
-        else if (Event->Type == etMouseUp && Event->Key == KeyMouseLeft)
-          if (MoveStart)
+    if (Event->Type == etMouseDown)//####
+      DebugAddHex ("etMouseDown", Event->MouseKeys);//####
+    if (IsEventMine (Event, Offset))
+      if (Event->Type == etMouseDown && (Event->MouseKeys == (Bit [KeyMouseLeft - 1] | Bit [KeyMouseRight - 1]) || PCPlayForever))
+        PCPlayForever = !PCPlayForever;
+      else if (!PlayThreadStarted)
+        {
+          Sel.x = (Event->X - Offset.x) / (Rect.Width / 8);
+          Sel.y = 7 - ((Event->Y - Offset.y) / (Rect.Height / 8));
+          TranslateCoord (&Sel);
+          if (Event->Type == etMouseDown && Event->Key == KeyMouseLeft)
             {
-              if (Move [0].x == Move [1].x && Move [0].y == Move [1].y)   // we haven't moved
-                MoveStart = false;
-              else
-                MoveComplete = true;
+              Move [0] = Sel;
+              Move [1] = Sel;
+              // Store possible moves in MovePos []
               memset (LegalMoves, false, sizeof (LegalMoves));
+              if (Piece (Board [Sel.x][Sel.y]) != pEmpty)
+                {
+                  GetPieceMoves (Sel, Moves, Analysis);
+                  m = Moves;
+                  while (m->x >= 0)   // for all moves
+                    {
+                      LegalMoves [m->x][m->y] = true;
+                      m++;
+                    }
+                }
+              MoveStart = true;
               Invalidate (true);
               Res = true;
             }
-      }
+          else if (Event->Type == etMouseMove && MoveStart)
+            {
+              if (Sel.x != Move [1].x || Sel.y != Move [1].y)
+                {
+                  Move [1] = Sel;
+                  Invalidate (true);
+                }
+              Res = true;
+            }
+          else if (Event->Type == etMouseUp && Event->Key == KeyMouseLeft)
+            if (MoveStart)
+              {
+                if (Move [0].x == Move [1].x && Move [0].y == Move [1].y)   // we haven't moved
+                  MoveStart = false;
+                else if (Event->ShiftState & KeyCntl)   // Debug: Set Forbiden move
+                  {
+                    MoveForbidenFrom.x = Move [0].x;
+                    MoveForbidenFrom.y = Move [0].y;
+                    MoveForbidenTo.x = Move [1].x;
+                    MoveForbidenTo.y = Move [1].y;
+                    MoveStart = false;
+                  }
+                else
+                  MoveComplete = true;
+                memset (LegalMoves, false, sizeof (LegalMoves));
+                Invalidate (true);
+                Res = true;
+              }
+        }
     return Res;
   }
 
@@ -354,15 +380,14 @@ bool _ChessBoard::ProcessEventCustom (_Event *Event, _Point Offset)
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const _Point FormSize = {650, 600};
-
 class _FormMain: public _Form
   {
     public:
-      const int LogsSize = 2000;
+      const int LogsSize = 4000;
       const int BoardWidth = 500;
       char *Logs, *sLogs;
       _Piece Graveyard [2][64];
+      int ColourBG [2];
       //
       _Container *Toolbar;
       _Button *bProperties, *bUndo, *bPlay, *bRestart, *bEdit, *bHelp, *bQuit;
@@ -382,9 +407,14 @@ class _FormMain: public _Form
 
 _FormMain *fMain;
 
+bool PCPlays;
+
 bool Undo;
-bool PlayForMe;
+bool PCPlay;
+bool Analyse;
 bool Restart;
+
+char *Path;
 
 typedef struct
   {
@@ -396,9 +426,374 @@ typedef struct
     char *Log;
   } _UndoItem;
 
-_UndoItem UndoStack [500];
+_UndoItem UndoStack [1000];
 
 int UndoStackSize;
+
+int StrChangeChar (char *p, char c1, char c2)
+  {
+    int n;
+    //
+    n = 0;
+    while (*p)
+      {
+        if (*p == c1)
+          {
+            *p = c2;
+            n++;
+          }
+        p++;
+      }
+    return n;
+  }
+
+char *RemoveTextFormats (char *St)
+  {
+    char *Res, *r;
+    //
+    Res = NULL;
+    StrAssignCopy (&Res, St);
+    r = Res;
+    while (true)
+      {
+        r = StrPos (r, '\a');
+        if (r == NULL)
+          break;
+        StrDelete (r, 2);
+      }
+    r = Res;
+    while (true)
+      {
+        r = StrPos (r, '\v');
+        if (r == NULL)
+          break;
+        *r = tab;
+      }
+    return Res;
+  }
+
+bool FileWriteLine_ (int f, char *Line)
+  {
+    bool Res;
+    //
+    StrChangeChar (Line, '\n', ',');
+    Res = FileWriteLine (f, Line);
+    StrChangeChar (Line, ',', '\n');
+    return Res;
+  }
+
+void GameSave (char *Name, void *Parameter)
+  {
+    int f;   // file ID
+    char *Line, *l;
+    int x, y;
+    _Piece *p;
+    //
+    Line = (char *) malloc (fMain->LogsSize + 100);
+    f = FileOpen (Name, foWrite);
+    if (f >= 0)
+      {
+        l = Line;
+        StrCat (&l, "Board\t");
+        for (y = 0; y < 8; y++)
+          for (x = 0; x < 8; x++)
+            {
+              NumToStrBase (&l, Board [x][y], 0, 16);
+              StrCat (&l, ',');
+            }
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        //
+        l = Line;
+        StrCat (&l, "PlayerWhite\t");
+        NumToStr (&l, PlayerWhite);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        //
+        l = Line;
+        StrCat (&l, "Graveyard\t");
+        for (y = 0; y <= 1; y++)
+          {
+            p = fMain->Graveyard [y];
+            while (*p != pEmpty)
+              {
+                NumToHex (&l, *p++);
+                StrCat (&l, ',');
+              }
+            StrCat (&l, '\t');
+          }
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        //
+        l = Line;
+        StrCat (&l, "Logs\t");
+        StrCat (&l, fMain->Logs);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        //
+        l = Line;
+        StrCat (&l, "Moves\t");
+        NumToStr (&l, MoveID);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        FileClose (f);
+      }
+    else
+      StrCat (&fMain->sLogs, "*** ERROR SAVING FILE ***\n");
+    free (Line);
+  }
+
+void GameLoad (char *Name, void *Parameter)
+  {
+    int f;   // file ID
+    int Size;
+    char *Data, *dp, *dp_;
+    int x, y;
+    _Piece *p;
+    int n;
+    //
+    f = FileOpen (Name, foRead);
+    if (f >= 0)
+      {
+        fMain->Graveyard [0][0] = fMain->Graveyard [1][0] = pEmpty;
+        Size = FileSize (f);
+        Data = (char *) malloc (Size + 1);
+        FileRead (f, (byte *) Data, Size);
+        Data [Size] = 0;   // Terminate String
+        dp = Data;
+        while (*dp)
+          {
+            // Break off a line
+            dp_ = StrPos (dp, '\n');
+            *dp_++ = 0;
+            // Look for a Data Name
+            if (StrMatch (&dp, "Board\t"))
+              {
+                x = y = 0;
+                while (true)
+                  {
+                    if (*dp == 0)
+                      break;
+                    Board [x][y] = (_Piece) StrGetHex (&dp);
+                    dp++;
+                    if (++x == 8)
+                      {
+                        x = 0;
+                        if (++y == 8)
+                          break;
+                      }
+                  }
+              }
+            else if (StrMatch (&dp, "PlayerWhite\t"))
+              PlayerWhite = StrGetNum (&dp);
+            else if (StrMatch (&dp, "Graveyard\t"))
+              {
+                p = fMain->Graveyard [0];
+                n = 0;
+                while (*dp && n < SIZEARRAY (fMain->Graveyard [0]))
+                  {
+                    if (*dp == '\t')
+                      {
+                        p = fMain->Graveyard [1];
+                        n = 0;
+                        dp++;
+                      }
+                    if (*dp)
+                      {
+                        p [n++] = (_Piece) StrGetHex (&dp);
+                        p [n] = pEmpty;
+                      }
+                    if (*dp == ',')
+                      dp++;
+                  }
+              }
+            else if (StrMatch (&dp, "Logs\t"))
+              {
+                strcpy (fMain->Logs, dp);
+                StrChangeChar (fMain->Logs, ',', '\n');
+              }
+            else if (StrMatch (&dp, "Moves\t"))
+              MoveID = StrGetNum (&dp);
+            else
+              break;
+            dp = dp_;
+          }
+        FileClose (f);
+        free (Data);
+        fMain->sLogs = StrPos (fMain->Logs, (char) 0);
+        UndoStackSize = 0;
+        fMain->cBoard->Move [0].x = -1;
+        fMain->cBoard->MovePC [0].x = -1;
+        fMain->lMessage->TextSet (NULL);
+        fMain->lMessage->VisibleSet (false);
+        Refresh = true;
+      }
+    else
+      StrCat (&fMain->sLogs, "*** ERROR LOADING FILE ***\n");
+  }
+
+void LogSave (char *Name, void *Parameter)
+  {
+    int f;   // file ID
+    char *l;
+    //
+    f = FileOpen (Name, foWrite);
+    if (f >= 0)
+      {
+        l = RemoveTextFormats (fMain->Logs);
+        FileWrite (f, (byte *) l, StrLen (l));
+        FileClose (f);
+        free (l);
+      }
+    else
+      StrCat (&fMain->sLogs, "*** ERROR SAVING FILE ***\n");
+  }
+
+#define FileSettings ".Chess"
+
+bool SettingsSave (void)
+  {
+    int f;   // file ID
+    char *Line, *l;
+    //
+    Line = (char *) malloc (250);
+    f = FileOpen_ (FileSettings, foWrite);
+    if (f >= 0)
+      {
+        l = Line;
+        StrCat (&l, "Depth\t");
+        IntToStr (&l, DepthPlay);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        //
+        l = Line;
+        StrCat (&l, "Analysis\t");
+        IntToStr (&l, Analysis);
+        StrCat (&l, '\t');
+        IntToStr (&l, AnalysisScorePiece);
+        StrCat (&l, '\t');
+        IntToStr (&l, AnalysisScoreMove);
+        StrCat (&l, '\t');
+        IntToStr (&l, AnalysisScoreAttack);
+        StrCat (&l, '\t');
+        IntToStr (&l, AnalysisScoreAttackInd);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        //
+        l = Line;
+        StrCat (&l, "Randomize\t");
+        IntToStr (&l, Randomize);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        //
+        l = Line;
+        StrCat (&l, "Font\t");
+        StrCat (&l, FontPieces);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        //
+        l = Line;
+        StrCat (&l, "FontMap\t");
+        IntToStr (&l, FontPiecesMap);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        // Colours
+        l = Line;
+        StrCat (&l, "Colours\t");
+        NumToHex (&l, fMain->cBoard->Colours [0]); StrCat (&l, ',');
+        NumToHex (&l, fMain->cBoard->Colours [1]); StrCat (&l, ',');
+        NumToHex (&l, fMain->ColourBG [0]); StrCat (&l, ',');
+        NumToHex (&l, fMain->ColourBG [1]);
+        *l = 0;
+        FileWriteLine_ (f, Line);
+        // Done Close file & exit
+        FileClose (f);
+      }
+    free (Line);
+    return f >= 0;
+  }
+
+int Colours [4];
+
+bool SettingsLoad (void)
+  {
+    int f;   // file ID
+    int Size;
+    char *Data, *dp, *dp_;
+    _DirItem *d;
+    int i;
+    //
+    for (i = 0; i < SIZEARRAY (Colours); i++)
+      Colours [i] = -1;
+    f = FileOpen_ (FileSettings, foRead);
+    if (f >= 0)
+      {
+        Size = FileSize (f);
+        Data = (char *) malloc (Size + 1);
+        Data [Size] = 0;   // Terminate String
+        FileRead (f, (byte *) Data, Size);
+        dp = Data;
+        while (*dp)
+          {
+            // Break off a line
+            dp_ = StrPos (dp, '\n');
+            *dp_++ = 0;
+            // Look for a Data Name
+            if (StrMatch (&dp, "Depth\t"))
+              DepthPlay = StrGetNum (&dp);
+            else if (StrMatch (&dp, "Analysis\t"))
+              {
+                if (*dp)
+                  Analysis = (_Analysis) StrGetNum (&dp);
+                if (*dp)
+                  AnalysisScorePiece = StrGetNum (&dp);
+                if (*dp)
+                  AnalysisScoreMove = StrGetNum (&dp);
+                if (*dp)
+                  AnalysisScoreAttack = StrGetNum (&dp);
+                if (*dp)
+                  AnalysisScoreAttackInd = StrGetNum (&dp);
+              }
+            else if (StrMatch (&dp, "Randomize\t"))
+              Randomize = StrGetNum (&dp);
+            else if (StrMatch (&dp, "Font\t"))
+              {
+                // find font in Fonts
+                d = Fonts;
+                FontPiecesSelect = 0;
+                while (d)
+                  if (StrSame (d->Name, dp))   // Font found
+                    {
+                      FontPieces = d->Name;
+                      d = NULL;
+                    }
+                  else
+                    {
+                      d = d->Next;
+                      FontPiecesSelect++;
+                    }
+              }
+            else if (StrMatch (&dp, "FontMap\t"))
+              FontPiecesMap = StrGetNum (&dp);
+            else if (StrMatch (&dp, "Colours\t"))
+              {
+                for (i = 0; i < SIZEARRAY (Colours); i++)
+                  {
+                    Colours [i] = StrGetHex (&dp);
+                    if (dp)
+                      dp++;
+                  }
+              }
+            else
+              DebugAddS ("Properties File: Bad Item:", dp);
+            dp = dp_;
+          }
+        FileClose (f);
+        free (Data);
+        return true;
+      }
+    return false;
+  }
 
 void GraveyardUpdate (void)
   {
@@ -460,41 +855,41 @@ void MovePiece_ (_Coord From, _Coord To)
     ui->OldTo = Board [To.x][To.y];
     ui->Log = fMain->sLogs;
     //
-    if ((MoveCount & 1) == 0)   // New Move
+    if ((MoveID & 1) == 0)   // new White move
       {
-        NumToStr (&fMain->sLogs, (MoveCount >> 1) + 1);
-        StrCat (&fMain->sLogs, ")  ");
+        //StrCat (&fMain->sLogs, "\a00\a11\a22\a33\a44\a55\a66\a77\a88\a99 ");
+        StrCat (&fMain->sLogs, "\a8");
+        NumToStr (&fMain->sLogs, (MoveID >> 1) + 1);
+        StrCat (&fMain->sLogs, ".  ");
       }
     // Set colour
     if (PieceWhite (ui->OldFrom) == PlayerWhite)   // Player's move
-      StrCat (&fMain->sLogs, "\a4");   // blue
+      StrCat (&fMain->sLogs, "\a7");   // white
     else
-      StrCat (&fMain->sLogs, "\a2");   // green
-    // Write move
+      StrCat (&fMain->sLogs, "\a0");   // black
+    // Log move and update Graveyard
     CoordToStr (&fMain->sLogs, From);
-    CoordToStr (&fMain->sLogs, To);
-    if (ui->SpecMov != smNone)
-      StrCat (&fMain->sLogs, '+');
-    if (Piece (ui->OldTo) != pEmpty || ui->SpecMov == smCrown)
-      StrCat (&fMain->sLogs, "**");
-    // Update Graveyard
     if (Piece (ui->OldTo) != pEmpty)   // taking piece
-      GraveyardAddPiece (ui->OldTo);
+      {
+        StrCat (&fMain->sLogs, "\abx\ab");   // show an x
+        GraveyardAddPiece (ui->OldTo);   // Add to Graveyard
+      }
+    else
+      StrCat (&fMain->sLogs, ' ');
+    CoordToStr (&fMain->sLogs, To);
     ui->SpecMov = MovePiece (From, To);
+    if (ui->SpecMov != smNone)
+      StrCat (&fMain->sLogs, '*');
+    else
+      StrCat (&fMain->sLogs, ' ');
     if (ui->SpecMov == smEnPassant)
       GraveyardAddPiece (PieceFrom (pPawn, !PieceWhite (ui->OldFrom)));
-    // restore colour
-    if (PieceWhite (ui->OldFrom) == PlayerWhite)   // Player's move
-      StrCat (&fMain->sLogs, "\a4");   // blue
-    else
-      StrCat (&fMain->sLogs, "\a2");   // green
-    if ((MoveCount & 1) == 0)   // New Move
-      StrCat (&fMain->sLogs, ' ');
+    if (MoveID & 1)   // make ready for a Black Move
+      StrCat (&fMain->sLogs, '\v');
     else
       StrCat (&fMain->sLogs, '\n');
-    MoveCount++;
     //
-    if (UndoStackSize  + 1 < SIZEARRAY (UndoStack))
+    if (UndoStackSize  + 1 < SIZEARRAY (UndoStack))   // just in case
       UndoStackSize++;
   }
 
@@ -512,7 +907,6 @@ bool UnmovePiece_ (void)
     if (ui->SpecMov == smEnPassant)
       GraveyardRemovePiece (PieceFrom (pPawn, !PieceWhite (ui->OldFrom)));
     fMain->sLogs = ui->Log;
-    MoveCount--;
     return true;
   }
 
@@ -524,45 +918,30 @@ bool PrevPlayer (void)
     return PieceWhite (ui->OldFrom);
   }
 
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//
-// ASK COLOUR FORM
-//
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-class _FormAskColour: public _Form
+bool MoveOposite (_UndoItem *m1, _UndoItem *m2)
   {
-    public:
-      _Label *lWhatColour;
-      _Button *bWhite;
-      _Button *bBlack;
-      //_DropList *dlColour;
-      //_Button *bGo;
-      _FormAskColour (_Point Pos);
-  };
-
-void ActionPlayColour (_Button *b)
-  {
-    PlayerWhite = b->DataInt;
-    b->Form->Die ();
-    Restart = true;
+    if (m1->From.x == m2->To.x && m1->From.y == m2->To.y)
+      if (m1->To.x == m2->From.x && m1->To.y == m2->From.y)
+        return true;
+    return false;
   }
 
-_FormAskColour::_FormAskColour (_Point Pos): _Form (NULL, {Pos.x, Pos.y, 400, 60}, waAlwaysOnTop)
-  {
-    Container->FontSet (NULL, 16);
-    lWhatColour = new _Label (Container, {4, 0, 200, 0}, "What Colour will you play?");
-    bWhite = new _Button (Container, {200, 0, 100, 0}, "\a7\abWhite\ab\a7", (_Action) ActionPlayColour);
-    bWhite->DataInt = true;
-    bBlack = new _Button (Container, {300, 0, 100, 0}, "\abBlack\ab", (_Action) ActionPlayColour);
-    bBlack->DataInt = false;
-    //dlColour = new _DropList (Container, {200, 0, 0, 0}, "White\tBlack", (_Action) ActionPlayColour);
-  }
+bool NoDraws = true;
 
-void SetPlayerColour (_Point Pos)
+bool CheckRepeat (void)
   {
-    new _FormAskColour (Pos);
+    if (NoDraws)
+      if (UndoStackSize >= 4)
+        if (MoveOposite (&UndoStack [UndoStackSize-1], &UndoStack [UndoStackSize-3]))
+          if (MoveOposite (&UndoStack [UndoStackSize-2], &UndoStack [UndoStackSize-4]))
+            {
+              MoveForbidenFrom = UndoStack [UndoStackSize-4].From;
+              MoveForbidenTo = UndoStack [UndoStackSize-4].To;
+              return true;
+            }
+    MoveForbidenFrom = {-1, -1};
+    MoveForbidenTo = {-1, -1};
+    return false;
   }
 
 
@@ -575,11 +954,10 @@ void SetPlayerColour (_Point Pos)
 class _FormProperties: public _Form
   {
     public:
-      _Label *lDepth;
-      _ButtonArrow *bDepthUp, *bDepthDown;
-      _CheckBox *cbComplex;
-      _Label *lRandomize;
-      _Slider *sRandomize;
+      _Tabs *tPage;
+      _Container *cPageAppearence, *cPageChessEngine;
+      // PageAppearence
+      _CheckBox *cbRotate;
       _Label *lColour;
       _DropList *dlColour;
       _Button *bColourB0, *bColourB1;
@@ -588,6 +966,16 @@ class _FormProperties: public _Form
       _DropList *dlFont;
       _Label *lFontMap;
       _DropList *dlFontMap;
+      // PageChessEngine
+      _Label *lDepth;
+      _ButtonArrow *bDepthUp, *bDepthDown;
+      _CheckBox *cbNoDraws;
+      _Label *lAnalysis;
+      _DropList *dlAnalysis;
+      _Label *lScorePiece, *lScoreMove, *lScoreAttack, *lScoreAttackInd;
+      _EditNumber *eScorePiece, *eScoreMove, *eScoreAttack, *eScoreAttackInd;
+      _Label *lRandomize;
+      _Slider *sRandomize;
       _FormProperties (char *Title, _Point Position);
      ~_FormProperties (void);
   };
@@ -604,6 +992,12 @@ void StrDepth (char *St)
     StrCat (&St, "Depth ");
     IntToStr (&St, DepthPlay);
     *St = 0;
+  }
+
+void ActionPropertiesTab (_Tabs *Tabs)
+  {
+    fProperties->cPageAppearence->VisibleSet (Tabs->Selected == 0);
+    fProperties->cPageChessEngine->VisibleSet (Tabs->Selected == 1);
   }
 
 void ActionDepth (_Container *Container)
@@ -623,12 +1017,18 @@ void ActionDepth (_Container *Container)
     fProperties->lDepth->TextSet (St);
   }
 
-void ActionComplex (_Container *Container)
+void ActionAnalysis (_Container *Container)
   {
-    _CheckBox *b;
-    //
-    b = (_CheckBox *) Container;
-    SimpleAnalysis = !b->Down;
+    Analysis = (_Analysis) fProperties->dlAnalysis->Selected;
+    NoDraws = fProperties->cbNoDraws->Down;
+  }
+
+void ActionAnalysisScore (_Container *Container)
+  {
+    AnalysisScorePiece = fProperties->eScorePiece->Value;
+    AnalysisScoreMove = fProperties->eScoreMove->Value;
+    AnalysisScoreAttack = fProperties->eScoreAttack->Value;
+    AnalysisScoreAttackInd = fProperties->eScoreAttackInd->Value;
   }
 
 int RandomizeValues [] = {0, 50, 100, 250, 500, 1000, 2000, 4000, 8000, 20000, 50000, 100000};
@@ -637,6 +1037,12 @@ void ActionRandomize (_Slider *Slider)
   {
     Randomize = RandomizeValues [Slider->ValueGet ()];
     DebugAddInt ("Randomize =", Randomize);
+  }
+
+void ActionRotate (_CheckBox *CheckBox)
+  {
+    fMain->cBoard->RotateAllowed = CheckBox->Down;
+    fMain->cBoard->Invalidate (true);
   }
 
 void ActionColour (_Container *Container)
@@ -657,6 +1063,7 @@ void ActionColour (_Container *Container)
       {
         fMain->cBoard->Colours [0] = Colour0 [dl->Selected];
         fMain->cBoard->Colours [1] = Colour1 [dl->Selected];
+        fMain->cBoard->Invalidate (true);
         fProperties->bColourB0->Colour = Colour0 [dl->Selected];
         fProperties->bColourB0->Invalidate (true);
         fProperties->bColourB1->Colour = Colour1 [dl->Selected];
@@ -665,40 +1072,31 @@ void ActionColour (_Container *Container)
     Refresh = true;
   }
 
-_Button *bColour = NULL;
-
-void ActionColourSelected (int Colour)
+void ActionColourSelected (int Result, void *Parameter)
   {
-    if (bColour)
+    _Button *bColour;
+    //
+    if (Parameter)
       {
-        bColour->Colour = Colour;
+        bColour = (_Button *) Parameter;
+        bColour->Colour = Result;
         bColour->Invalidate (true);
         if (bColour->DataInt == 1)
-          fMain->cBoard->Colours [0] = Colour;
+          fMain->cBoard->Colours [0] = Result;
         else if (bColour->DataInt == 2)
-          fMain->cBoard->Colours [1] = Colour;
+          fMain->cBoard->Colours [1] = Result;
         else if (bColour->DataInt == 3)
-          {
-            fMain->Container->Colour = Colour;
-            fMain->lPCStats->Colour = Colour;
-          }
+          fMain->ColourBG [0] = Result;
         else if (bColour->DataInt == 4)
-          {
-            fMain->Container->ColourGrad = Colour;
-            fMain->lPCStats->ColourGrad = Colour;
-          }
-        fMain->Container->InvalidateAll (true);
+          fMain->ColourBG [1] = Result;
+        if (bColour->DataInt <= 2)
+          fMain->cBoard->Invalidate (true);
       }
   }
 
-void ActionColourBG (_Container *Container)
+void ActionColourBG (_Button *Button)
   {
-    _Button *b;
-    //
-    b = (_Button *) Container;
-    bColour = b;
-    if (!b->Down)
-      ColourSelect ("Adjust Colour", b->Colour, ActionColourSelected);
+    ColourSelect ("Adjust Colour", Button->Colour, ActionColourSelected, Button);
   }
 
 void ActionFont (_DropList *dl)
@@ -728,62 +1126,49 @@ void ActionFontMap (_DropList *dl)
       }
   }
 
-_FormProperties::_FormProperties (char *Title, _Point Position): _Form (Title, {Position.x, Position.y, 200, 220}, waAlwaysOnTop)
+_FormProperties::_FormProperties (char *Title, _Point Position): _Form (Title, {Position.x, Position.y, 240, 240}, waAlwaysOnTop)
   {
-    int x, y;
+    const int Th = 24;
     const int Bdr = 4;
     const int Ht = 28;
+    const int bw = Ht * 2 / 3;
+    int x, y;
     int v;
     _DirItem *f;
     char *St, *s;
     //
     St = (char *) malloc (MaxPath);
     Container->FontSet (NULL, 12);
+    tPage = new _Tabs (Container, {0, 0, 0, Th}, "Appearence\t\a2Chess Engine\a2", (_Action) ActionPropertiesTab);
+    // Page Appearence
+    cPageAppearence = new _Container (Container, {0, Th, 0, 0});
     x = y = Bdr;
-    StrDepth (St);
-    lDepth = new _Label (Container, {x, y, 64, Ht}, St, aLeft);
-    x += 64;
-    bDepthUp = new _ButtonArrow (Container, {x, y, Ht, Ht / 2}, NULL, ActionDepth, dUp);
-    bDepthDown = new _ButtonArrow (Container, {x, y + Ht / 2, Ht, Ht / 2}, NULL, ActionDepth, dDown);
-    x += Bdr + Ht;
-    cbComplex = new _CheckBox (Container, {Container->Rect.Width - 80 - Bdr, y, 80, Ht}, "Complex Analysis", ActionComplex);
-    cbComplex->Align = aRight;
-    cbComplex->Down = !SimpleAnalysis;
-    x = Bdr;
+    cbRotate = new _CheckBox (cPageAppearence, {x, y, -Bdr, Ht},"Rotate Board if playing Black", (_Action) ActionRotate);
+    cbRotate->Down = fMain->cBoard->RotateAllowed;
     y += Ht + Bdr;
-    lRandomize = new _Label (Container, {x, y, 64, Ht}, "Randomize");
+    lColour = new _Label (cPageAppearence, {x, y, 64, Ht},"Colours");
     x += 64;
-    sRandomize = new _Slider (Container, {x, y, Container->Rect.Width - x - Bdr, Ht}, 0, 10, (_Action) ActionRandomize);
-    v = 0;
-    while (RandomizeValues [v] < Randomize)
-      v++;
-    sRandomize->ValueSet (v);
-    x = Bdr;
-    y += Ht + 4 * Bdr;
-    lColour = new _Label (Container, {x, y, 64, Ht},"Colours");
-    x += 64;
-    bColourB0 = new _Button (Container, {x, y, Ht, Ht}, NULL, ActionColourBG);
+    bColourB0 = new _Button (cPageAppearence, {x, y, Ht, Ht}, NULL, (_Action) ActionColourBG);
     bColourB0->Colour = fMain->cBoard->Colours [0]; bColourB0->ColourGrad = -1;
     bColourB0->DataInt = 1;
     x += Ht + Bdr;
-    bColourB1 = new _Button (Container, {x, y, Ht, Ht}, NULL, ActionColourBG);
+    bColourB1 = new _Button (cPageAppearence, {x, y, Ht, Ht}, NULL, (_Action) ActionColourBG);
     bColourB1->Colour = fMain->cBoard->Colours [1]; bColourB1->ColourGrad = -1;
     bColourB1->DataInt = 2;
     x += Ht + Bdr;
-    //x += 64 + Bdr;
-    dlColour = new _DropList (Container, {x, y, 64, Ht}, "Oak\tTeal\tSunset\tNeon", ActionColour);
+    dlColour = new _DropList (cPageAppearence, {x, y, -Bdr, Ht}, "Oak\tTeal\tSunset\tNeon", ActionColour);
     y += Ht + Bdr;
     x = 64 + Bdr;
-    bColourBG0 = new _Button (Container, {x, y, Ht, Ht}, NULL, ActionColourBG);
+    bColourBG0 = new _Button (cPageAppearence, {x, y, Ht, Ht}, NULL, (_Action) ActionColourBG);
     bColourBG0->Colour = fMain->Container->Colour; bColourBG0->ColourGrad = -1;
     bColourBG0->DataInt = 3;
     x += Ht + Bdr;
-    bColourBG1 = new _Button (Container, {x, y, Ht, Ht}, NULL, ActionColourBG);
+    bColourBG1 = new _Button (cPageAppearence, {x, y, Ht, Ht}, NULL, (_Action) ActionColourBG);
     bColourBG1->Colour = fMain->Container->ColourGrad; bColourBG1->ColourGrad = -1;
     bColourBG1->DataInt = 4;
     x = Bdr;
     y += Ht + Bdr;
-    lFont = new _Label (Container, {x, y, 64, Ht}, "Font (Pieces)"); x += 64;
+    lFont = new _Label (cPageAppearence, {x, y, 64, Ht}, "Font (Pieces)"); x += 64;
     s = St;
     f = Fonts;
     while (true)
@@ -796,22 +1181,65 @@ _FormProperties::_FormProperties (char *Title, _Point Position): _Form (Title, {
           break;
       }
     *s = 0;
-    dlFont = new _DropList (Container, {x, y, 100, Ht}, St, (_Action) ActionFont);
+    dlFont = new _DropList (cPageAppearence, {x, y, -Bdr, Ht}, St, (_Action) ActionFont);
     dlFont->Selected = FontPiecesSelect;
     x = Bdr;
     y += Ht + Bdr;
-    lFontMap = new _Label (Container, {x, y, 64, Ht}, "Font Map"); x += 64;
-    dlFontMap = new _DropList (Container, {x, y, 100, Ht}, "Map A\tMap B\tUnicode", (_Action) ActionFontMap);
+    lFontMap = new _Label (cPageAppearence, {x, y, 64, Ht}, "Font Map"); x += 64;
+    dlFontMap = new _DropList (cPageAppearence, {x, y, -Bdr, Ht}, "Map A\tMap B\tUnicode", (_Action) ActionFontMap);
     dlFontMap->Selected = FontPiecesMap;
+    // Page Chess Engine
+    cPageChessEngine = new _Container (Container, {0, Th, 0, 0});
+    cPageChessEngine->VisibleSet (false);
+    x = y = Bdr;
+    StrDepth (St);
+    lDepth = new _Label (cPageChessEngine, {x, y, 64, Ht}, St, aLeft);
+    x += 80;
+    bDepthUp = new _ButtonArrow (cPageChessEngine, {x, y, bw, Ht / 2}, NULL, ActionDepth, dUp);
+    bDepthDown = new _ButtonArrow (cPageChessEngine, {x, y + Ht / 2, bw, Ht / 2}, NULL, ActionDepth, dDown);
+    x += bw + bw;
+    cbNoDraws = new _CheckBox (cPageChessEngine, {x, y, 0, Ht}, "No Draws", ActionAnalysis);
+    cbNoDraws->Down = NoDraws;
+    x = Bdr;  //x += Bdr + Ht;
+    y += Ht + Bdr;
+    lAnalysis = new _Label (cPageChessEngine, {x, y, 0, Ht}, "Analysis");
+    x += 80;
+    dlAnalysis = new _DropList (cPageChessEngine, {x, y, -Bdr, Ht}, "Simple\tAdd Moves\tAdd Moves Extended\tAdd Moves Defend", ActionAnalysis);
+    dlAnalysis->Selected = Analysis;
+    x = Bdr;
+    y += Ht + Bdr;
+    lScorePiece = new _Label (cPageChessEngine, {x, y, 0, Ht}, "Score / Piece"); x += 80;
+    eScorePiece = new _EditNumber (cPageChessEngine, {x, y, 64, Ht}, NULL, 0, 1000, ActionAnalysisScore);
+    eScorePiece->Value = AnalysisScorePiece;
+    y += Ht;
+    x = Bdr;
+    lScoreMove = new _Label (cPageChessEngine, {x, y, 0, Ht}, "Score / Move"); x += 80;
+    eScoreMove = new _EditNumber (cPageChessEngine, {x, y, 64, Ht}, NULL, 0, 1000, ActionAnalysisScore);
+    eScoreMove->Value = AnalysisScoreMove;
+    y += Ht;
+    x = Bdr;
+    lScoreAttack = new _Label (cPageChessEngine, {x, y, 0, Ht}, "Score / Attack"); x += 80;
+    eScoreAttack = new _EditNumber (cPageChessEngine, {x, y, 64, Ht}, NULL, 0, 1000, ActionAnalysisScore);
+    eScoreAttack->Value = AnalysisScoreAttack;
+    x = Bdr;
+    y += Ht;
+    lScoreAttackInd = new _Label (cPageChessEngine, {x, y, 0, Ht}, "Score / Attack'"); x += 80;
+    eScoreAttackInd = new _EditNumber (cPageChessEngine, {x, y, 64, Ht}, NULL, 0, 1000, ActionAnalysisScore);
+    eScoreAttackInd->Value = AnalysisScoreAttackInd;
+    x = Bdr;
+    y += Ht + Bdr;
+    lRandomize = new _Label (cPageChessEngine, {x, y, 0, Ht}, "Randomize"); x += 80;
+    sRandomize = new _Slider (cPageChessEngine, {x, y, -Bdr, Ht}, 0, 10, (_Action) ActionRandomize);
+    v = 0;
+    while (RandomizeValues [v] < Randomize)
+      v++;
+    sRandomize->ValueSet (v);
     free (St);
   }
 
 void ActionProperties (_Container *Container)
   {
-    _Button *b;
-    //
-    b = (_Button *) Container;
-    if (!b->Down && fProperties == NULL)
+    if (!fProperties)
       fProperties = new _FormProperties ("Setup", MousePos ());
   }
 
@@ -822,62 +1250,90 @@ void ActionProperties (_Container *Container)
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-char *Help = "\ab\a1Stewy's Chess\ab\a1\e5\n"
+char *Help = "\ab\a1Stewy's Chess\ab\a0\e5\n"
              "\nDrag a piece to move.\n"
              "Castling, Crowning & En-Passant allowed.\n"
-             "\auSetup\au: Change PC Play Level, Colours & Fonts. "
-             "Randomize adds a random element.\n"
+             "PC plays to win and avoid a Draw.\n"
+             "\n"
+             "\auSetup\au:\n"
+             "  \auAppearance\au: Change Colours & Piece Fonts etc.\n"
+             "  \auChess Engine\au: Change how the PC Plays:\n"
+             "    \aiDepth\ai: Number of moves to look ahead.\n"
+             "    \aiAnalysis\ai: method used to score the future board:\n"
+             "      Pieces only, additionally Score Moves, attacks, defences.\n"
+             "    \aiScore / Piece\ai: the value of surviving pieces (relative to a Pawn).\n"
+             "    \aiScore / Move\ai: the value of each available move.\n"
+             "    \aiScore / Attack\ai: the value of each piece you can attack (\").\n"
+             "    \aiScore / Attack'\ai: the value of each piece you guard (\").\n"
+             "    \aiRandomize\ai adds a random element.\n"
+             "\n"
              "\auUndo\au: Take back moves.\n"
-             "\auPlay\au: The PC will move for you.\n"
-             "\auRestart\au: Start again.\n"
-             "\auEdit\au: Move any pieces anywhere,\n"
-             "right-click for a new piece.\n"
-             "\auStats\au: PC moves considered, time taken & White Board Score, in \aiPawns\ai.\n"
-             "\nRight click anywhere for game save etc.\n\n"
-             "\au\a4github.com/StewartTunbridge\a4\n"
-             "\a4www.pimicros.com.au\a4\au";
+             "\n"
+             "\auPlay\au: The PC will decide the next move.\n"
+             "\n"
+             "\auRestart\au: Start again and choose your colour OR play a friend.\n"
+             "\n"
+             "\auEdit\au: Move any pieces anywhere.\n"
+             "  right-click for a new piece.\n"
+             "\n"
+             "\auStats\au: PC moves considered, time taken & Projected Board Score, in \aiPawns\ai.\n"
+             "\n"
+             "Right click anywhere for game save etc.\n"
+             "\n"
+             "\au\a4github.com/StewartTunbridge\n"
+             "\a4www.pimicros.com.au\a0\au";
 
 void ActionUndo (_Container *Container)
   {
-    if (!((_Button *) Container)->Down)
-      Undo = true;
+    Undo = true;
   }
 
 void ActionPlay (_Container *Container)
   {
-    if (!((_Button *) Container)->Down)
-      PlayForMe = true;
+    PCPlay = true;
+  }
+
+void ActionPlayColour (int Result, void *Parameter)//(_Container *Container, int Selection)
+  {
+    if (Result >= 0)
+      {
+        PlayerWhite = true;
+        PCPlays = true;
+        if (Result == 1)
+          PlayerWhite = false;
+        else if (Result == 2)   // Human verses Human
+          PCPlays = false;
+        Restart = true;
+      }
   }
 
 void ActionRestart (_Container *Container)
   {
-    if (!((_Button *) Container)->Down)
-      Restart = true;
+    MessageResponseBox ({200, 85}, "What Colour will the human(s) play?", "\a7\abWhite\ab\t\abBlack\ab\t\ab\a1Both\ab", ActionPlayColour);
   }
 
 void ActionEdit (_Button *Button)
   {
-    fMain->cBoard->LegalMovesShow = !Button->Down;
     fMain->mPieces->EnabledSet (Button->Down);
     fMain->bUndo->EnabledSet (!Button->Down);
     fMain->bPlay->EnabledSet (!Button->Down);
     UndoStackSize = 0;
+    Analyse = true;
   }
 
 void ActionHelp (_Button *Button)
   {
-    if (!Button->Down)
-      {
-        MessageBox ({400, 400}, Help, 18);
-        fMessageBox->Container->Colour = ColourAdjust (cBlue, 160);
-        fMessageBox->Container->ColourGrad = cWhite;
-      }
+    MessageBox ({500, 400}, Help, 14);
+    fMessageBox->lMessage->AlignVert = aTop;
+    fMessageBox->lMessage->Align = aLeft;
+    fMessageBox->lMessage->Margin = 4;
+    fMessageBox->Container->Colour = ColourAdjust (cBlue, 160);
+    fMessageBox->Container->ColourGrad = cWhite;
   }
 
 void ActionQuit (_Container *Container)
   {
-    if (!((_Button *) Container)->Down)
-      Exit = true;
+    Exit = true;
   }
 
 void ActionMenu (_Container *Container)
@@ -886,48 +1342,54 @@ void ActionMenu (_Container *Container)
     //
     Menu = (_Menu *) Container;
     if (!PlayThreadStarted)
-    if (Menu->Selected == 0)   // Reload
-      Load = true;
-    else if (Menu->Selected == 1)   // Save
-      Save = true;
-    else if (Menu->Selected == 2)   // Save Log
-      SaveLog = true;
+      if (Menu->Selected == 0)   // Reload
+        Load = true;
+      else if (Menu->Selected == 1)   // Save
+        Save = true;
+      else if (Menu->Selected == 2)   // Save Log
+        SaveLog = true;
   }
 
 void ActionPieces (_MenuPopup *mp)
   {
+    _ChessBoard *cb;
     int dx, dy;
-    int x, y;
+    _Coord Sel;
     //
     if (mp->Selected >= 0)
       {
-        dx = mp->Parent->Rect.Width / 8;
-        dy = mp->Parent->Rect.Height / 8;
-        x = mp->Mouse.x / dx;
-        y = 7 - mp->Mouse.y / dy;
+        cb = (_ChessBoard *) mp->Parent;
+        dx = cb->Rect.Width / 8;
+        dy = cb->Rect.Height / 8;
+        Sel.x = mp->Mouse.x / dx;
+        Sel.y = 7 - mp->Mouse.y / dy;
+        cb->TranslateCoord (&Sel);
         if (mp->Selected <= pPawn)
-          Board [x][y] = PieceFrom (mp->Selected, false);
+          Board [Sel.x][Sel.y] = PieceFrom (mp->Selected, false);
         else
-          Board [x][y] = PieceFrom (mp->Selected - pPawn, true);
-        fMain->cBoard->Invalidate (true);
+          Board [Sel.x][Sel.y] = PieceFrom (mp->Selected - pPawn, true);
+        cb->Move [0] = {-1, -1};
+        cb->Invalidate (true);
+        cb->MoveComplete = true;
       }
   }
+
+const _Point FormSize = {630, 600};
 
 _FormMain::_FormMain (char *Title): _Form (Title, {100, 100, FormSize.x, FormSize.y}, waResizable)
   {
     int x, y;
     int btn = 56;
     // Make the Main Form
+    ColourBG [0] = cOrange;
+    ColourBG [1] = ColourAdjust (cOrange, 80);
     Logs = (char *) malloc (LogsSize);
     sLogs = Logs;
-    Container->Colour = ColourAdjust (cOrange, 100);
-    Container->ColourGrad = ColourAdjust (cOrange, 80);
-    Container->FontSet ("Ubuntu-R.ttf", 14);//, fsNoGrayscale);
-    Container->Bitmap = BitmapLoad (Window, "Chess2.bmp");
+    Container->FontSet (NULL, 14);//, fsNoGrayscale);Ubuntu-R.ttf
+    Container->Bitmap = BitmapLoadResource (Window, "Chess2.bmp");
     y = 0;
     // build Toolbar
     Toolbar = new _Container (Container, {0, y, 0, 45});
-    Toolbar->Colour = ColourAdjust (cForm1, 80);
     x = 0;
     bProperties = new _Button (Toolbar, {x, 0, btn, 0}, "\e0\nSetup", (_Action) ActionProperties); x += btn;
     bUndo = new _Button (Toolbar, {x, 0, btn, 0}, "\e1\nUndo", (_Action) ActionUndo); x += btn;
@@ -936,13 +1398,14 @@ _FormMain::_FormMain (char *Title): _Form (Title, {100, 100, FormSize.x, FormSiz
     bEdit = new _Button (Toolbar, {x, 0, btn, 0}, "\e4\nEdit", (_Action) ActionEdit); x += btn;
     bEdit->Toggle = true;
     bHelp = new _Button (Toolbar, {x, 0, btn, 0}, "\e5\nHelp", (_Action) ActionHelp); x += btn;
-    x += 8;
     bQuit = new _Button (Toolbar, {x, 0, btn, 0}, "\e6\nQuit", (_Action) ActionQuit); x += btn;
-    y += Toolbar->Rect.Height;
-    lMessage = new _Label (Toolbar, {x, 0, 0, 0}, NULL, aCenter);
-    lMessage->FontSet (NULL, 24, fsBold);
+    //x += 8;
+    lMessage = new _Label (Toolbar, {x, 0, 0, 0}, NULL, aCenter);//, bLowered);
+    lMessage->FontSet (NULL, 22, fsBold);
+    lMessage->ColourText = cWhite;
     lMessage->Colour = cRed;
     lMessage->VisibleSet (false);
+    y += Toolbar->Rect.Height;
     // Dead Pieces go to the Graveyard
     lGraveyard = new _Label (Container, {0, y, BoardWidth, 60}, NULL, aLeft);
     lGraveyard->FontSet (FontPieces, lGraveyard->Rect.Height / 2 - 1);
@@ -950,30 +1413,23 @@ _FormMain::_FormMain (char *Title): _Form (Title, {100, 100, FormSize.x, FormSiz
     y += lGraveyard->Rect.Height;
     //
     x = 0;
-    cBoard = new _ChessBoard (Container, {x, y, BoardWidth, Container->Rect.Height - y - 20});
+    cBoard = new _ChessBoard (Container, {x, y, BoardWidth, - 20});
     cBoard->RectLock |= rlRight + rlBottom;
-    //cBoard->Colour = cGray;
     char s [128];
     AllPieces (s);
-    //mPieces = new _MenuPopup (cBoard, {}, "Empty\tKing\tQueen\tRook\tBishop\tKnight\tPawn\t\ebBlack <-> White\eb", (_Action) ActionPieces);
     mPieces = new _MenuPopup (cBoard, {}, s, (_Action) ActionPieces);
     mPieces->FontSet (FontPieces, 18);
     mPieces->EnabledSet (false);
-    //y += cBoard->Rect.Height;
     x += BoardWidth;
     //
-    lLogs = new _Label (Container, {x + 8, Toolbar->Rect.Height, 0, lGraveyard->Rect.Height + cBoard->Rect.Height - 8}, NULL, aLeft, bNone);
+    lLogs = new _Label (Container, {x + 4, Toolbar->Rect.Height, -8, -20}, NULL, aLeft, bNone);
     lLogs->RectLock = rlLeft | rlBottom;
-    lLogs->AlignVert = aRight;   // = Bottom
-    //lLogs->ColourText = ColourAdjust (cAqua, 20); //ColourAdjust (cOrange, 70); cBrown;
-    lLogs->FontSet (NULL, 14, fsBold);
+    lLogs->AlignVert = aBottom;
+    lLogs->FontSet (NULL, 14);//, fsBold);
     y += cBoard->Rect.Height;
     //
     lPCStats = new _Label (Container, {0, y, 0, 0}, NULL, aLeft);
     lPCStats->RectLock |= rlTop;
-    lPCStats->Colour = Container->Colour;//cYellow;//cOrange;
-    lPCStats->ColourGrad = Container->ColourGrad;//cYellow;//cOrange;
-    lPCStats->ColourText = ColourAdjust (cGreen, 20);
     //
     Wait = new _Wait (lLogs, {0, 0, 0, 0});
     Wait->VisibleSet (false);
@@ -993,336 +1449,23 @@ _FormMain::~_FormMain ()
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-int StrChangeChar (char *p, char c1, char c2)
-  {
-    int n;
-    //
-    n = 0;
-    while (*p)
-      {
-        if (*p == c1)
-          {
-            *p = c2;
-            n++;
-          }
-        p++;
-      }
-    return n;
-  }
-
-bool FileWriteLine_ (int f, char *Line)
-  {
-    bool Res;
-    //
-    StrChangeChar (Line, '\n', ',');
-    Res = FileWriteLine (f, Line);
-    StrChangeChar (Line, ',', '\n');
-    return Res;
-  }
-
-void GameSave (char *Name)
-  {
-    int f;   // file ID
-    char *Line, *l;
-    int x, y;
-    _Piece *p;
-    //
-    Line = (char *) malloc (fMain->LogsSize + 100);
-    f = FileOpen (Name, foWrite);
-    if (f >= 0)
-      {
-        l = Line;
-        StrCat (&l, "Board\t");
-        for (y = 0; y < 8; y++)
-          for (x = 0; x < 8; x++)
-            {
-              NumToStrBase (&l, Board [x][y], 0, 16);
-              StrCat (&l, ',');
-            }
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        //
-        l = Line;
-        StrCat (&l, "Graveyard\t");
-        for (y = 0; y <= 1; y++)
-          {
-            p = fMain->Graveyard [y];
-            while (*p != pEmpty)
-              {
-                NumToHex (&l, *p++);
-                StrCat (&l, ',');
-              }
-            StrCat (&l, '\t');
-          }
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        //
-        l = Line;
-        StrCat (&l, "Logs\t");
-        StrCat (&l, fMain->Logs);
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        //
-        l = Line;
-        StrCat (&l, "Moves\t");
-        NumToStr (&l, (MoveCount >> 1) + 1);
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        FileClose (f);
-      }
-    else
-      StrCat (&fMain->sLogs, "*** ERROR SAVING FILE ***\n");
-    free (Line);
-  }
-
-void GameLoad (char *Name)
-  {
-    int f;   // file ID
-    int Size;
-    char *Data, *dp, *dp_;
-    int x, y;
-    _Piece *p;
-    //
-    f = FileOpen (Name, foRead);
-    if (f >= 0)
-      {
-        fMain->Graveyard [0][0] = fMain->Graveyard [1][0] = pEmpty;
-        Size = FileSize (f);
-        Data = (char *) malloc (Size + 1);
-        Data [Size] = 0;   // Terminate String
-        FileRead (f, (byte *) Data, Size);
-        dp = Data;
-        while (*dp)
-          {
-            // Break off a line
-            dp_ = StrPos (dp, '\n');
-            *dp_++ = 0;
-            // Look for a Data Name
-            if (StrMatch (&dp, "Board\t"))
-              {
-                x = y = 0;
-                while (true)
-                  {
-                    if (*dp == 0)
-                      break;
-                    Board [x][y] = (_Piece) StrGetHex (&dp);
-                    dp++;
-                    if (++x == 8)
-                      {
-                        x = 0;
-                        if (++y == 8)
-                          break;
-                      }
-                  }
-              }
-            else if (StrMatch (&dp, "Graveyard\t"))
-              {
-                p = fMain->Graveyard [0];
-                while (*dp)
-                  {
-                    if (*dp == '\t')
-                      {
-                        p = fMain->Graveyard [1];
-                        dp++;
-                      }
-                    if (*dp)
-                      {
-                        *p++ = (_Piece) StrGetHex (&dp);
-                        *p = pEmpty;
-                      }
-                    if (*dp == ',')
-                      dp++;
-                  }
-              }
-            else if (StrMatch (&dp, "Logs\t"))
-              {
-                strcpy (fMain->Logs, dp);
-                StrChangeChar (fMain->Logs, ',', '\n');
-              }
-            else if (StrMatch (&dp, "Moves\t"))
-              MoveCount = (StrGetNum (&dp) - 1) << 1;
-            else
-              break;
-            dp = dp_;
-          }
-        FileClose (f);
-        free (Data);
-        fMain->sLogs = StrPos (fMain->Logs, (char) 0);
-        UndoStackSize = 0;
-        fMain->cBoard->Move [0].x = -1;
-        fMain->cBoard->MovePC [0].x = -1;
-        fMain->lMessage->VisibleSet (false);
-        //Form->Container->EnabledSet (true);
-        Refresh = true;
-      }
-    else
-      StrCat (&fMain->sLogs, "*** ERROR LOADING FILE ***\n");
-  }
-
-void LogSave (char *Name)
-  {
-    int f;   // file ID
-    //
-    f = FileOpen (Name, foWrite);
-    if (f >= 0)
-      {
-        FileWrite (f, (byte *) fMain->Logs, StrLen (fMain->Logs));
-        FileClose (f);
-      }
-    else
-      StrCat (&fMain->sLogs, "*** ERROR SAVING FILE ***\n");
-  }
-
-#define FileSettings "Chess.properties"
-
-bool SettingsSave (void)
-  {
-    int f;   // file ID
-    char *Line, *l;
-    //
-    Line = (char *) malloc (250);
-    f = FileOpen (FileSettings, foWrite);
-    if (f >= 0)
-      {
-        l = Line;
-        StrCat (&l, "Depth\t");
-        IntToStr (&l, DepthPlay);
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        //
-        l = Line;
-        StrCat (&l, "Simple\t");
-        IntToStr (&l, SimpleAnalysis);
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        //
-        l = Line;
-        StrCat (&l, "Randomize\t");
-        IntToStr (&l, Randomize);
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        //
-        l = Line;
-        StrCat (&l, "Font\t");
-        StrCat (&l, FontPieces);
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        //
-        l = Line;
-        StrCat (&l, "FontMap\t");
-        IntToStr (&l, FontPiecesMap);
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        // Colours
-        l = Line;
-        StrCat (&l, "Colours\t");
-        NumToHex (&l, fMain->cBoard->Colours [0]); StrCat (&l, ',');
-        NumToHex (&l, fMain->cBoard->Colours [1]); StrCat (&l, ',');
-        NumToHex (&l, fMain->Container->Colour); StrCat (&l, ',');
-        NumToHex (&l, fMain->Container->ColourGrad);
-        *l = 0;
-        FileWriteLine_ (f, Line);
-        // Done Close file & exit
-        FileClose (f);
-        return true;
-      }
-    return false;
-  }
-
-bool SettingsLoad (void)
-  {
-    int f;   // file ID
-    int Size;
-    char *Data, *dp, *dp_;
-    _DirItem *d;
-    //
-    f = FileOpen (FileSettings, foRead);
-    if (f >= 0)
-      {
-        Size = FileSize (f);
-        Data = (char *) malloc (Size + 1);
-        Data [Size] = 0;   // Terminate String
-        FileRead (f, (byte *) Data, Size);
-        dp = Data;
-        while (*dp)
-          {
-            // Break off a line
-            dp_ = StrPos (dp, '\n');
-            *dp_++ = 0;
-            // Look for a Data Name
-            if (StrMatch (&dp, "Depth\t"))
-              DepthPlay = StrGetNum (&dp);
-            else if (StrMatch (&dp, "Simple\t"))
-              SimpleAnalysis = (bool) StrGetNum (&dp);
-            else if (StrMatch (&dp, "Randomize\t"))
-              Randomize = StrGetNum (&dp);
-            else if (StrMatch (&dp, "Font\t"))
-              {
-                // find font in Fonts
-                d = Fonts;
-                FontPiecesSelect = 0;
-                while (d)
-                  if (StrSame (d->Name, dp))   // Font found
-                    {
-                      FontPieces = d->Name;
-                      d = NULL;
-                    }
-                  else
-                    {
-                      d = d->Next;
-                      FontPiecesSelect++;
-                    }
-              }
-            else if (StrMatch (&dp, "FontMap\t"))
-              FontPiecesMap = StrGetNum (&dp);
-            else if (StrMatch (&dp, "Colours\t"))
-              {
-                fMain->cBoard->Colours [0] = StrGetHex (&dp);
-                if (dp)  dp++;
-                fMain->cBoard->Colours [1] = StrGetHex (&dp);
-                if (dp)  dp++;
-                fMain->Container->Colour = StrGetHex (&dp);
-                fMain->lPCStats->Colour = fMain->Container->Colour;
-                if (dp)  dp++;
-                fMain->Container->ColourGrad = StrGetHex (&dp);
-                fMain->lPCStats->ColourGrad = fMain->Container->ColourGrad;
-              }
-            else
-              DebugAddS ("Properties File Error: ", dp);
-            dp = dp_;
-          }
-        FileClose (f);
-        free (Data);
-        return true;
-      }
-    return false;
-  }
-
 int main_ (int argc, char *argv [])
   {
-    bool PCPlay;
     _Coord MovePC [2];
     char St [200], *s;
-    char *Path;
+    _Piece p;
+    _Bitmap *Icon;
     //
     DebugAddS ("===========Start Chess", Revision);
-    if (GetCurrentPath (&Path))
-      {
-        DebugAddS ("Home Path: ", Path);
-        free (Path);
-      }
-    Path = nullptr;
-    if (StrExtractPath (argv [0], &Path))   // change directory to that included in the "exe" path, to make launching easier
-      {
-        DebugAddS ("Exe Path: ", Path);
-        chdir (Path);
-      }
+    ResourcePathSet (argv [0]);
+    chdir (ResourcePath);
+    //GetCurrentPath (&ResourcePath);
+    DebugAddS ("Resource Path: ", ResourcePath);
     BoardInit ();
     PlayerWhite = true;
-    PCPlay = false;
-    // Main Loop
     Restart = true;
-    PlayForMe = PCPlay = false;
+    PCPlays = true;
+    PCPlay = Analyse = false;
     UndoStackSize = 0;
     s = St;   // Build the form Title
     StrCat (&s, "Stewy's Chess Programme - ");
@@ -1331,10 +1474,19 @@ int main_ (int argc, char *argv [])
     if (FontsRead () == 0)
       DebugAdd ("**** NO CHESS FONTS");
     fMain = new _FormMain (St);
+    Icon = BitmapLoad (fMain->Window, "Icon.bmp");
+    WindowSetIcon (fMain->Window, Icon);
+    BitmapDestroy (Icon);
     SettingsLoad ();
-    _Point p;
-    WindowGetPosSize (fMain->Window, &p.x, &p.y, NULL, NULL);
-    SetPlayerColour (p);
+    if (Colours [0] >= 0)
+      fMain->cBoard->Colours [0] = Colours [0];
+    if (Colours [1] >= 0)
+      fMain->cBoard->Colours [1] = Colours [1];
+    if (Colours [2] >= 0)
+      fMain->ColourBG [0] = Colours [2];
+    if (Colours [3] >= 0)
+      fMain->ColourBG [1] = Colours [3];
+    // Main Loop
     while (!Exit)
       {
         usleep (1000);
@@ -1347,8 +1499,8 @@ int main_ (int argc, char *argv [])
         if (Restart)
           {
             Restart = false;
-            MoveCount = 0;
             BoardInit ();
+            //BoardScoreWhite = 0;
             fMain->cBoard->Move [0].x = -1;
             fMain->cBoard->MovePC [0].x = -1;
             fMain->Graveyard [0][0] = pEmpty;
@@ -1356,11 +1508,13 @@ int main_ (int argc, char *argv [])
             GraveyardUpdate ();
             fMain->sLogs = fMain->Logs;
             fMain->lMessage->VisibleSet (false);
+            fMain->lMessage->TextSet (NULL);
             fMain->lPCStats->TextSet (NULL);
             Refresh = true;
             UndoStackSize = 0;
             if (!PlayerWhite)
-              PCPlay = true;
+              if (PCPlays)
+                PCPlay = true;
           }
         else if (Load)
           {
@@ -1380,18 +1534,13 @@ int main_ (int argc, char *argv [])
         else if (Undo)
           {
             Undo = false;
-            while (true)
-              {
-                if (UndoStackSize == 0)
-                  break;
-                UnmovePiece_();   // so undo a move
-                if (PrevPlayer () == PlayerWhite)   // until next undo is opponent
-                  break;
-              }
+            if (UndoStackSize)
+              UnmovePiece_();   // so undo a move
             fMain->cBoard->Move [0].x = -1;
             fMain->cBoard->MovePC [0].x = -1;
             fMain->lMessage->VisibleSet (false);
-            if (MoveCount == 0)   // starting again
+            fMain->lMessage->TextSet (NULL);
+            if (MoveID == 0)   // starting again
               Restart = true;
             Refresh = true;
           }
@@ -1399,11 +1548,30 @@ int main_ (int argc, char *argv [])
           {
             PlayThreadFinished = false;
             fMain->Toolbar->EnabledSet (true);
+            // Build / show stats message
+            s = St;
+            if (PlayThreadWhite)
+              StrCat (&s, "\a7");
+            else
+              StrCat (&s, "\a0");
+            StrCat (&s, "Move Stats: ");
+            IntToStr (&s, MovesConsidered, DigitsCommas);
+            StrCat (&s, " moves considered in ");
+            IntToStrDecimals (&s, PlayThreadTime, 3);
+            StrCat (&s, " sec.  Score ");
+            IntToStrDecimals (&s, BoardScore (PlayThreadWhite), 3);
+            StrCat (&s, ", ");
+            IntToStrDecimals (&s, PlayThreadScore, 3);
+            *s = 0;
+            fMain->lPCStats->TextSet (St);
+            // Process move
             if (PlayThreadWhite == PlayerWhite)   // playing for the human
               if (PlayThreadScore == MININT)
                 {
                   fMain->lMessage->TextSet ("No Moves, Give up");
                   fMain->lMessage->VisibleSet (true);
+                  Beep ();
+                  PCPlayForever = false;
                 }
               else
                 {
@@ -1413,21 +1581,11 @@ int main_ (int argc, char *argv [])
                 }
             else   // playing for the PC
               {
-                // Build / show stats message
-                s = St;
-                StrCat (&s, "Stats: ");
-                IntToStr (&s, MovesConsidered, DigitsCommas);
-                StrCat (&s, " moves considered in ");
-                IntToStrDecimals (&s, PlayThreadTime, 3);
-                StrCat (&s, " sec.  Score ");
-                IntToStrDecimals (&s, -PlayThreadScore, 3);
-                *s = 0;
-                fMain->lPCStats->TextSet (St);
-                //
-                if (PlayThreadScore == MININT)
+                if (PlayThreadScore == MININT)   // I only see Doom
                   {
                     fMain->lMessage->TextSet ("I Surrender");
                     fMain->lMessage->VisibleSet (true);
+                    PCPlayForever = false;
                   }
                 else
                   {
@@ -1441,67 +1599,101 @@ int main_ (int argc, char *argv [])
                       {
                         fMain->lMessage->TextSet ("IN CHECK");
                         fMain->lMessage->VisibleSet (true);
+                        Beep ();
                       }
                     else
                       fMain->lMessage->VisibleSet (false);
                   }
                 Refresh = true;
               }
-            //cBoard->EnabledSet (true);
             fMain->Wait->VisibleSet (false);
           }
-        else if (PCPlay)
+        else if (PCPlay && !PlayThreadStarted)
           {
             PCPlay = false;
+            bool Player = (MoveID & 1) ^ 1;   // Play for whoever's turn it is
             fMain->Toolbar->EnabledSet (false);
-            InCheck (!PlayerWhite);   // Mark PC King if in check
-            StartThread (PlayThread, (void *) !PlayerWhite);
-            fMain->Wait->ColourText = ColourAdjust (cGreen, 25);
+            InCheck (Player);   // Mark King if in check
+            if (CheckRepeat ())
+              fMain->lPCStats->TextSet ("\ab\a1Avoiding Loop\ab");
+            StartThread (PlayThread, (void *) Player);
+            fMain->Wait->ColourText = Player ? cWhite : cBlack;
             fMain->Wait->VisibleSet (true);
           }
-        else if (PlayForMe)
+        else if (Analyse)
           {
-            PlayForMe = false;
-            fMain->Toolbar->EnabledSet (false);
-            StartThread (PlayThread, (void *) PlayerWhite);
-            fMain->Wait->ColourText = ColourAdjust (cBlue, 50);
-            fMain->Wait->VisibleSet (true);
+            Analyse = false;
+            s = St;
+            StrCat (&s, "White Board Score ");
+            IntToStrDecimals (&s, BoardScore (true), 3);
+            *s = 0;
+            fMain->lPCStats->TextSet (St);
           }
         else if (fMain->cBoard->MoveComplete)
           {
             fMain->cBoard->MoveStart = false;
             fMain->cBoard->MoveComplete = false;
-            if (fMain->bEdit->Down)
+            fMain->lMessage->VisibleSet (false);
+            if (fMain->bEdit->Down)   // Editing
               {
-                Board [fMain->cBoard->Move [1].x][fMain->cBoard->Move [1].y] = Board [fMain->cBoard->Move [0].x][fMain->cBoard->Move [0].y];
-                Board [fMain->cBoard->Move [0].x][fMain->cBoard->Move [0].y] = pEmpty;
+                if (fMain->cBoard->Move [0].x >= 0)
+                  {
+                    Board [fMain->cBoard->Move [1].x][fMain->cBoard->Move [1].y] = Board [fMain->cBoard->Move [0].x][fMain->cBoard->Move [0].y];
+                    Board [fMain->cBoard->Move [0].x][fMain->cBoard->Move [0].y] = pEmpty;
+                  }
+                Analyse = true;
               }
             else
               {
-                if (MoveValid (fMain->cBoard->Move [0], fMain->cBoard->Move [1]))
+                p = Board [fMain->cBoard->Move [0].x][fMain->cBoard->Move [0].y];
+                if (Piece (p) != pEmpty && PieceWhite (p) == (MoveID & 1))  // if ((MoveID & 1) == PlayerWhite)
                   {
-                    //s = fMain->sLogs;
-                    MovePiece_ (fMain->cBoard->Move [0], fMain->cBoard->Move [1]);
-                    if (InCheck (PlayerWhite))   // You moved into / stayed in Check
-                      {
-                        UnmovePiece_ ();   // undo move
-                        //fMain->sLogs = s;
-                        fMain->lMessage->TextSet ("Save Your King");
-                        fMain->lMessage->VisibleSet (true);
-                        //StrCat (&fMain->sLogs, "Error\n");
-                      }
-                    else
-                      PCPlay = true;
+                    fMain->lMessage->TextSet ("Not that Colour\'s turn");
+                    fMain->lMessage->VisibleSet (true);
+                    Beep ();
+                    fMain->cBoard->Move [0].x = -1;
                   }
                 else
                   {
-                    fMain->lMessage->TextSet ("Not a move");
-                    fMain->lMessage->VisibleSet (true);
-                    //StrCat (&fMain->sLogs, "Error\n");
-                    fMain->cBoard->Move [0].x = -1;
+                    if (MoveValid (fMain->cBoard->Move [0], fMain->cBoard->Move [1]))
+                      {
+                        MovePiece_ (fMain->cBoard->Move [0], fMain->cBoard->Move [1]);
+                        if (InCheck (MoveID & 1))   // You moved into / stayed in Check PlayerWhite
+                          {
+                            UnmovePiece_ ();   // undo move
+                            fMain->lMessage->TextSet ("Save The King");
+                            fMain->lMessage->VisibleSet (true);
+                            Beep ();
+                            PCPlayForever = false;
+                          }
+                        else if ((MoveID & 1) == PlayerWhite)   // Computer's turn
+                          if (PCPlays)
+                            PCPlay = true;
+                      }
+                    else
+                      {
+                        fMain->lMessage->TextSet ("Not a move");
+                        fMain->lMessage->VisibleSet (true);
+                        Beep ();
+                        fMain->cBoard->Move [0].x = -1;
+                        PCPlayForever = false;
+                      }
                   }
               }
             Refresh = true;
+          }
+        else
+          if (PCPlayForever && !PlayThreadStarted)
+            PCPlay = true;
+        if (fMain->ColourBG [0] != fMain->Container->Colour || fMain->ColourBG [1] != fMain->Container->ColourGrad)
+          {
+            fMain->Container->Colour = fMain->ColourBG [0];
+            fMain->Container->ColourGrad = fMain->ColourBG [1];
+            fMain->Toolbar->Colour = fMain->ColourBG [0];
+            fMain->Toolbar->ColourGrad = fMain->ColourBG [1];
+            fMain->lPCStats->Colour = fMain->ColourBG [0];
+            fMain->lPCStats->ColourGrad = fMain->ColourBG [1];
+            fMain->Container->InvalidateAll (true);
           }
         if (Refresh)
           {
@@ -1514,29 +1706,11 @@ int main_ (int argc, char *argv [])
         if (FormsUpdate ())
           break;
       }
+    SettingsSave ();   // and save settings there
     while (FormList)
       delete (FormList);
-    chdir (Path);   // return to exe directory
-    SettingsSave ();   // and save settings there
     DirFree (Fonts);
-    free (Path);   // only now can we free this
+    free (ResourcePath);
     return 0;
   }
 
-
-/********************************************************************************************************************* JUNK
-                Name = (char *) malloc (64);
-                sN = Name;
-                StrCat (&sN, "board");
-                CurrentDateTimeToStr (&sN, true, true);
-                StrCat (&sN, ".dat");
-                *sN = 0;
-
-    char par [] = "Param # :";
-    for (x = 0; x < argc; x++)
-      {
-        par [6] = x + '0';
-        DebugAddS (par, argv [x]);
-      }
-
-*********************************************************************************************************************/

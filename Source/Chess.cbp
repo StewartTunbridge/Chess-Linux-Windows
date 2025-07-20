@@ -40,10 +40,12 @@
 			<Add library="libjpeg" />
 			<Add library="libpng" />
 			<Add library="Xext" />
+			<Add library="xkbcommon" />
 		</Linker>
 		<Unit filename="../Widgets/ColourSelect.cpp" />
 		<Unit filename="../Widgets/FileSelect.cpp" />
 		<Unit filename="../Widgets/MessageBox.cpp" />
+		<Unit filename="../Widgets/MessageResponseBox.cpp" />
 		<Unit filename="../Widgets/Widgets.cpp" />
 		<Unit filename="../Widgets/WidgetsDriverX.cpp" />
 		<Unit filename="../Widgets/WidgetsEdit.cpp" />

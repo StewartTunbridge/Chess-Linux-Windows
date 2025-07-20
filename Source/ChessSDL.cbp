@@ -38,12 +38,12 @@
 			<Add library="freetype" />
 			<Add library="libjpeg" />
 			<Add library="libpng" />
-			<Add library="Xext" />
 			<Add library="SDL2" />
 		</Linker>
 		<Unit filename="../Widgets/ColourSelect.cpp" />
 		<Unit filename="../Widgets/FileSelect.cpp" />
 		<Unit filename="../Widgets/MessageBox.cpp" />
+		<Unit filename="../Widgets/MessageResponseBox.cpp" />
 		<Unit filename="../Widgets/Widgets.cpp" />
 		<Unit filename="../Widgets/WidgetsDriverSDL.cpp" />
 		<Unit filename="../Widgets/WidgetsEdit.cpp" />
