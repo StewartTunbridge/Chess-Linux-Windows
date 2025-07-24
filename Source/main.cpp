@@ -15,7 +15,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-const char Revision [] = "1.8";
+const char Revision [] = "1.81";
 
 #include <stdio.h>
 #include <unistd.h>
@@ -162,8 +162,8 @@ class _ChessBoard: public _Container
       bool Rotate;
       int Colours [2];
       bool MoveStart, MoveComplete;
-      _Coord Move [2];   // Human move
-      _Coord MovePC [2];
+      bool MoveWhite;
+      _Coord Move [2][2];   // Colour * From/To
       bool LegalMovesShow;
       bool LegalMoves [8][8];
       //
@@ -182,8 +182,9 @@ _ChessBoard::_ChessBoard (_Container *Parent, _Rect Rect) : _Container (Parent, 
     Colours [0] = ColourAdjust (cBrown, 140);
     Colours [1] = ColourAdjust (cBrown, 180);
     MoveStart = MoveComplete = false;
-    Move [0] = Move [1] = {-1, -1};
-    MovePC [0] = MovePC [1] = {-1, -1};
+    MoveWhite = false;
+    for (int c = 0; c < 2; c++)
+      Move [c][0] = Move [c][1] = {-1, -1};
     LegalMovesShow = true;
     memset (LegalMoves, false, sizeof (LegalMoves));
   }
@@ -255,8 +256,8 @@ void _ChessBoard::DrawCustom (void)
               Center = BoardSquareCenter ({x, y});
               ColourGrad = Colour = Colours [(x ^ y) & 1];
               if (MoveStart)
-                if ((x == Move [0].x && y == Move [0].y) || (x == Move [1].x && y == Move [1].y))
-                  Colour = cWhite;
+                if ((x == Move [MoveWhite][0].x && y == Move [MoveWhite][0].y) || (x == Move [MoveWhite][1].x && y == Move [MoveWhite][1].y))
+                  Colour = cWhite;//%%%%
               if (Pass == 0)
                 {
                   DrawRectangle (Square, cBlack, cBlack, Colour);   // Background
@@ -300,8 +301,8 @@ void _ChessBoard::DrawCustom (void)
                   }
             }
       }
-    DrawVector (MovePC);
-    DrawVector (Move);
+    DrawVector (Move [0]);
+    DrawVector (Move [1]);
     Colour = -1;   // Revert to transparent
   }
 
@@ -309,6 +310,7 @@ bool _ChessBoard::ProcessEventCustom (_Event *Event, _Point Offset)
   {
     _Coord Sel, Moves [64], *m;
     bool Res;
+    _Piece p;
     //
     Res = false;
     if (Event->Type == etMouseDown)//####
@@ -321,31 +323,36 @@ bool _ChessBoard::ProcessEventCustom (_Event *Event, _Point Offset)
           Sel.x = (Event->X - Offset.x) / (Rect.Width / 8);
           Sel.y = 7 - ((Event->Y - Offset.y) / (Rect.Height / 8));
           TranslateCoord (&Sel);
+          p = Board [Sel.x][Sel.y];
           if (Event->Type == etMouseDown && Event->Key == KeyMouseLeft)
             {
-              Move [0] = Sel;
-              Move [1] = Sel;
-              // Store possible moves in MovePos []
-              memset (LegalMoves, false, sizeof (LegalMoves));
-              if (Piece (Board [Sel.x][Sel.y]) != pEmpty)
+              if (Piece (p) != pEmpty)
                 {
-                  GetPieceMoves (Sel, Moves, Analysis);
-                  m = Moves;
-                  while (m->x >= 0)   // for all moves
+                  MoveStart = true;
+                  MoveWhite = PieceWhite (p);
+                  Move [MoveWhite][0] = Sel;
+                  Move [MoveWhite][1] = Sel;
+                  // Store possible moves in MovePos []
+                  memset (LegalMoves, false, sizeof (LegalMoves));
+                  if (Piece (Board [Sel.x][Sel.y]) != pEmpty)
                     {
-                      LegalMoves [m->x][m->y] = true;
-                      m++;
+                      GetPieceMoves (Sel, Moves, Analysis);
+                      m = Moves;
+                      while (m->x >= 0)   // for all moves
+                        {
+                          LegalMoves [m->x][m->y] = true;
+                          m++;
+                        }
                     }
+                  Invalidate (true);
                 }
-              MoveStart = true;
-              Invalidate (true);
               Res = true;
             }
           else if (Event->Type == etMouseMove && MoveStart)
             {
-              if (Sel.x != Move [1].x || Sel.y != Move [1].y)
+              if (Sel.x != Move [MoveWhite][1].x || Sel.y != Move [MoveWhite][1].y)
                 {
-                  Move [1] = Sel;
+                  Move [MoveWhite][1] = Sel;
                   Invalidate (true);
                 }
               Res = true;
@@ -353,14 +360,14 @@ bool _ChessBoard::ProcessEventCustom (_Event *Event, _Point Offset)
           else if (Event->Type == etMouseUp && Event->Key == KeyMouseLeft)
             if (MoveStart)
               {
-                if (Move [0].x == Move [1].x && Move [0].y == Move [1].y)   // we haven't moved
+                if (Move [MoveWhite][0].x == Move [MoveWhite][1].x && Move [MoveWhite][0].y == Move [MoveWhite][1].y)   // we haven't moved
                   MoveStart = false;
-                else if (Event->ShiftState & KeyCntl)   // Debug: Set Forbiden move
+                else if (Event->ShiftState & KeyCntl)   // Debug: Set Forbiden move %%%% delete this
                   {
-                    MoveForbidenFrom.x = Move [0].x;
-                    MoveForbidenFrom.y = Move [0].y;
-                    MoveForbidenTo.x = Move [1].x;
-                    MoveForbidenTo.y = Move [1].y;
+                    MoveForbidenFrom.x = Move [MoveWhite][0].x;
+                    MoveForbidenFrom.y = Move [MoveWhite][0].y;
+                    MoveForbidenTo.x = Move [MoveWhite][1].x;
+                    MoveForbidenTo.y = Move [MoveWhite][1].y;
                     MoveStart = false;
                   }
                 else
@@ -622,8 +629,8 @@ void GameLoad (char *Name, void *Parameter)
         free (Data);
         fMain->sLogs = StrPos (fMain->Logs, (char) 0);
         UndoStackSize = 0;
-        fMain->cBoard->Move [0].x = -1;
-        fMain->cBoard->MovePC [0].x = -1;
+        fMain->cBoard->Move [0][0].x = -1;
+        fMain->cBoard->Move [1][0].x = -1;
         fMain->lMessage->TextSet (NULL);
         fMain->lMessage->VisibleSet (false);
         Refresh = true;
@@ -860,13 +867,15 @@ void MovePiece_ (_Coord From, _Coord To)
         //StrCat (&fMain->sLogs, "\a00\a11\a22\a33\a44\a55\a66\a77\a88\a99 ");
         StrCat (&fMain->sLogs, "\a8");
         NumToStr (&fMain->sLogs, (MoveID >> 1) + 1);
-        StrCat (&fMain->sLogs, ".  ");
+        StrCat (&fMain->sLogs, ".  \a7");
       }
-    // Set colour
+    else   // new black move
+      StrCat (&fMain->sLogs, "\a0");
+    /*// Set colour
     if (PieceWhite (ui->OldFrom) == PlayerWhite)   // Player's move
       StrCat (&fMain->sLogs, "\a7");   // white
     else
-      StrCat (&fMain->sLogs, "\a0");   // black
+      StrCat (&fMain->sLogs, "\a0");   // black*/
     // Log move and update Graveyard
     CoordToStr (&fMain->sLogs, From);
     if (Piece (ui->OldTo) != pEmpty)   // taking piece
@@ -880,8 +889,8 @@ void MovePiece_ (_Coord From, _Coord To)
     ui->SpecMov = MovePiece (From, To);
     if (ui->SpecMov != smNone)
       StrCat (&fMain->sLogs, '*');
-    else
-      StrCat (&fMain->sLogs, ' ');
+    //else
+    //  StrCat (&fMain->sLogs, ' ');
     if (ui->SpecMov == smEnPassant)
       GraveyardAddPiece (PieceFrom (pPawn, !PieceWhite (ui->OldFrom)));
     if (MoveID & 1)   // make ready for a Black Move
@@ -1031,11 +1040,19 @@ void ActionAnalysisScore (_Container *Container)
     AnalysisScoreAttackInd = fProperties->eScoreAttackInd->Value;
   }
 
-int RandomizeValues [] = {0, 50, 100, 250, 500, 1000, 2000, 4000, 8000, 20000, 50000, 100000};
+int RandomizeValues [11] = {0, 1, 5, 10, 25, 100, 200, 1000, 2000, 10000, 100000};
+                        // {0, 50, 100, 250, 500, 1000, 2000, 4000, 8000, 20000, 50000, 100000};
 
 void ActionRandomize (_Slider *Slider)
   {
+    char St [80], *s;
+    //
     Randomize = RandomizeValues [Slider->ValueGet ()];
+    s = St;
+    StrCat (&s, "Randomize\n");
+    NumToStr (&s, Randomize);
+    *s = 0;
+    ((_FormProperties *) (Slider->Form))->lRandomize->TextSet (St);
     DebugAddInt ("Randomize =", Randomize);
   }
 
@@ -1228,12 +1245,13 @@ _FormProperties::_FormProperties (char *Title, _Point Position): _Form (Title, {
     eScoreAttackInd->Value = AnalysisScoreAttackInd;
     x = Bdr;
     y += Ht + Bdr;
-    lRandomize = new _Label (cPageChessEngine, {x, y, 0, Ht}, "Randomize"); x += 80;
+    lRandomize = new _Label (cPageChessEngine, {x, y, 0, Ht}, NULL); x += 80; //"Randomize"
     sRandomize = new _Slider (cPageChessEngine, {x, y, -Bdr, Ht}, 0, 10, (_Action) ActionRandomize);
     v = 0;
     while (RandomizeValues [v] < Randomize)
       v++;
     sRandomize->ValueSet (v);
+    ActionRandomize (sRandomize);
     free (St);
   }
 
@@ -1368,7 +1386,8 @@ void ActionPieces (_MenuPopup *mp)
           Board [Sel.x][Sel.y] = PieceFrom (mp->Selected, false);
         else
           Board [Sel.x][Sel.y] = PieceFrom (mp->Selected - pPawn, true);
-        cb->Move [0] = {-1, -1};
+        cb->Move [0][0] = {-1, -1};
+        cb->Move [1][0] = {-1, -1};
         cb->Invalidate (true);
         cb->MoveComplete = true;
       }
@@ -1451,10 +1470,9 @@ _FormMain::~_FormMain ()
 
 int main_ (int argc, char *argv [])
   {
-    _Coord MovePC [2];
     char St [200], *s;
-    _Piece p;
     _Bitmap *Icon;
+    int Col;
     //
     DebugAddS ("===========Start Chess", Revision);
     ResourcePathSet (argv [0]);
@@ -1501,8 +1519,8 @@ int main_ (int argc, char *argv [])
             Restart = false;
             BoardInit ();
             //BoardScoreWhite = 0;
-            fMain->cBoard->Move [0].x = -1;
-            fMain->cBoard->MovePC [0].x = -1;
+            fMain->cBoard->Move [0][0].x = -1;
+            fMain->cBoard->Move [1][0].x = -1;
             fMain->Graveyard [0][0] = pEmpty;
             fMain->Graveyard [1][0] = pEmpty;
             GraveyardUpdate ();
@@ -1536,8 +1554,8 @@ int main_ (int argc, char *argv [])
             Undo = false;
             if (UndoStackSize)
               UnmovePiece_();   // so undo a move
-            fMain->cBoard->Move [0].x = -1;
-            fMain->cBoard->MovePC [0].x = -1;
+            fMain->cBoard->Move [0][0].x = -1;
+            fMain->cBoard->Move [1][0].x = -1;
             fMain->lMessage->VisibleSet (false);
             fMain->lMessage->TextSet (NULL);
             if (MoveID == 0)   // starting again
@@ -1565,45 +1583,26 @@ int main_ (int argc, char *argv [])
             *s = 0;
             fMain->lPCStats->TextSet (St);
             // Process move
-            if (PlayThreadWhite == PlayerWhite)   // playing for the human
-              if (PlayThreadScore == MININT)
-                {
-                  fMain->lMessage->TextSet ("No Moves, Give up");
-                  fMain->lMessage->VisibleSet (true);
-                  Beep ();
-                  PCPlayForever = false;
-                }
-              else
-                {
-                  fMain->cBoard->Move [0] = BestA [0];
-                  fMain->cBoard->Move [1] = BestB [0];
-                  fMain->cBoard->MoveComplete = true;
-                }
-            else   // playing for the PC
+            if (PlayThreadScore == MININT)
               {
-                if (PlayThreadScore == MININT)   // I only see Doom
+                fMain->lMessage->TextSet ("No Moves, It\'s Over");
+                fMain->lMessage->VisibleSet (true);
+                Beep ();
+                PCPlayForever = false;
+              }
+            else
+              {
+                MovePiece_ (BestA [0], BestB [0]);   // Update Board [][] ...
+                fMain->cBoard->Move [PlayThreadWhite][0] = BestA [0];
+                fMain->cBoard->Move [PlayThreadWhite][1] = BestB [0];
+                if (InCheck (!PlayThreadWhite))
                   {
-                    fMain->lMessage->TextSet ("I Surrender");
+                    fMain->lMessage->TextSet ("IN CHECK");
                     fMain->lMessage->VisibleSet (true);
-                    PCPlayForever = false;
+                    Beep ();
                   }
                 else
-                  {
-                    MovePC [0] = BestA [0];   // Extract the actual move
-                    MovePC [1] = BestB [0];
-                    MovePiece_ (MovePC [0], MovePC [1]);   // Update Board [][] ...
-                    fMain->cBoard->MovePC [0] = MovePC [0];   // Update cBoard
-                    fMain->cBoard->MovePC [1] = MovePC [1];
-                    fMain->cBoard->Invalidate (true);
-                    if (InCheck (PlayerWhite))
-                      {
-                        fMain->lMessage->TextSet ("IN CHECK");
-                        fMain->lMessage->VisibleSet (true);
-                        Beep ();
-                      }
-                    else
-                      fMain->lMessage->VisibleSet (false);
-                  }
+                  fMain->lMessage->VisibleSet (false);
                 Refresh = true;
               }
             fMain->Wait->VisibleSet (false);
@@ -1636,28 +1635,28 @@ int main_ (int argc, char *argv [])
             fMain->lMessage->VisibleSet (false);
             if (fMain->bEdit->Down)   // Editing
               {
-                if (fMain->cBoard->Move [0].x >= 0)
-                  {
-                    Board [fMain->cBoard->Move [1].x][fMain->cBoard->Move [1].y] = Board [fMain->cBoard->Move [0].x][fMain->cBoard->Move [0].y];
-                    Board [fMain->cBoard->Move [0].x][fMain->cBoard->Move [0].y] = pEmpty;
-                  }
-                Analyse = true;
+                for (Col = 0; Col < 2; Col++)
+                  if (fMain->cBoard->Move [Col][0].x >= 0)
+                    {
+                      Board [fMain->cBoard->Move [Col][1].x][fMain->cBoard->Move [Col][1].y] = Board [fMain->cBoard->Move [Col][0].x][fMain->cBoard->Move [Col][0].y];
+                      Board [fMain->cBoard->Move [Col][0].x][fMain->cBoard->Move [Col][0].y] = pEmpty;
+                      Analyse = true;
+                    }
               }
             else
               {
-                p = Board [fMain->cBoard->Move [0].x][fMain->cBoard->Move [0].y];
-                if (Piece (p) != pEmpty && PieceWhite (p) == (MoveID & 1))  // if ((MoveID & 1) == PlayerWhite)
+                if (fMain->cBoard->MoveWhite == (MoveID & 1))  // if ((MoveID & 1) == PlayerWhite)
                   {
                     fMain->lMessage->TextSet ("Not that Colour\'s turn");
                     fMain->lMessage->VisibleSet (true);
                     Beep ();
-                    fMain->cBoard->Move [0].x = -1;
+                    fMain->cBoard->Move [fMain->cBoard->MoveWhite][0].x = -1;
                   }
                 else
                   {
-                    if (MoveValid (fMain->cBoard->Move [0], fMain->cBoard->Move [1]))
+                    if (MoveValid (fMain->cBoard->Move [fMain->cBoard->MoveWhite][0], fMain->cBoard->Move [fMain->cBoard->MoveWhite][1]))
                       {
-                        MovePiece_ (fMain->cBoard->Move [0], fMain->cBoard->Move [1]);
+                        MovePiece_ (fMain->cBoard->Move [fMain->cBoard->MoveWhite][0], fMain->cBoard->Move [fMain->cBoard->MoveWhite][1]);
                         if (InCheck (MoveID & 1))   // You moved into / stayed in Check PlayerWhite
                           {
                             UnmovePiece_ ();   // undo move
@@ -1675,7 +1674,7 @@ int main_ (int argc, char *argv [])
                         fMain->lMessage->TextSet ("Not a move");
                         fMain->lMessage->VisibleSet (true);
                         Beep ();
-                        fMain->cBoard->Move [0].x = -1;
+                        fMain->cBoard->Move [fMain->cBoard->MoveWhite][0].x = -1;
                         PCPlayForever = false;
                       }
                   }
